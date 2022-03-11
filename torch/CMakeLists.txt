@@ -210,6 +210,18 @@ add_custom_command(
     WORKING_DIRECTORY
     "${TORCH_ROOT}"
 )
+file(GLOB_RECURSE datapipe_files "${TORCH_SRC_DIR}/utils/data/datapipes/*.py")
+add_custom_command(
+    OUTPUT
+    "${TORCH_SRC_DIR}/utils/data/datapipe.pyi"
+    COMMAND
+    "${PYTHON_EXECUTABLE}" ${TORCH_SRC_DIR}/utils/data/gen_pyi.py
+    DEPENDS
+    "${TORCH_SRC_DIR}/utils/data/datapipe.pyi.in"
+    ${datapipe_files}
+    WORKING_DIRECTORY
+    "${TORCH_ROOT}"
+)
 if(USE_DISTRIBUTED)
     if(WIN32)
       append_filelist("libtorch_python_distributed_core_sources" TORCH_PYTHON_SRCS)
