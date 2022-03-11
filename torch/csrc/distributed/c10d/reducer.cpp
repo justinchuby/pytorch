@@ -2052,6 +2052,32 @@ void verify_params_across_processes(
     const c10::intrusive_ptr<c10d::ProcessGroup>& process_group,
     const std::vector<at::Tensor>& params,
     const c10::optional<std::weak_ptr<c10d::Logger>>& logger) {
+
+  // First verify number of parameters to avoid inconsistent inputs into
+  // broadcast which can cause a crash.
+  // See https://github.com/pytorch/pytorch/issues/73547
+
+  at::TensorOptions param_size_options;
+  param_size_options = param_size_options.dtype(at::kLong);
+  param_size_options = param_size_options.device(params[0].device());
+  at::Tensor param_size_tensor = at::tensor(
+    {static_cast<int64_t>(params.size())}, std::move(param_size_options));
+
+  // Broadcast and verify parameter size.
+  std::vector<at::Tensor> param_size_vec{param_size_tensor};
+  process_group->broadcast(param_size_vec)->wait();
+  auto res = param_size_tensor[0].item<int>();
+  TORCH_CHECK(
+    res == params.size(),
+    c10::str(
+      "DDP expects same model across all ranks, but Rank ",
+      process_group->getRank(),
+      " has ", params.size(), " params, while rank 0 has inconsistent ", res,
+      " params."
+    )
+  );
+
+  // Continue with parameter shape verification.
   size_t i = 0;
   for (const auto& t : params) {
     i += 2 * t.dim();
