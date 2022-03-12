@@ -1,3 +1,4 @@
+#include <string.h>
 #include <torch/csrc/deploy/Exception.h>
 #include <torch/csrc/deploy/elf_file.h>
 #include <torch/csrc/deploy/irange.h>
@@ -26,9 +27,9 @@ ElfFile::ElfFile(const char* filename) : memFile_(filename) {
   }
 }
 
-at::optional<Section> ElfFile::findSection(const char* name) const {
+multipy::optional<Section> ElfFile::findSection(const char* name) const {
   MULTIPY_CHECK(name != nullptr, "Null name");
-  at::optional<Section> found = at::nullopt;
+  multipy::optional<Section> found = multipy::nullopt;
   for (const auto& section : sections_) {
     if (strcmp(name, section.name) == 0) {
       found = section;
