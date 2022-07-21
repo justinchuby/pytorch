@@ -33,6 +33,7 @@ Updated operators:
 import warnings
 
 import torch
+import torch.onnx._type_utils
 from torch.onnx import symbolic_helper
 from torch.onnx import symbolic_opset9 as opset9
 
@@ -267,23 +268,23 @@ def flatten(g, input, start_dim, end_dim):
 
 def _constant_fill(g, sizes, dtype, const_value):
     if dtype is None:
-        dtype = symbolic_helper.ScalarType.FLOAT
-    if not symbolic_helper.scalar_type_to_pytorch_type[dtype].is_floating_point:
+        dtype = torch.onnx._type_utils.ScalarType.FLOAT
+    if not torch.onnx._type_utils.scalar_type_to_pytorch_type[dtype].is_floating_point:
         result = g.op(
             "ConstantFill",
             sizes,
-            dtype_i=symbolic_helper.cast_pytorch_to_onnx["Float"],
+            dtype_i=torch.onnx._type_utils.cast_pytorch_to_onnx["Float"],
             input_as_shape_i=1,
             value_f=const_value,
         )
         return symbolic_helper._cast_func_template(
-            symbolic_helper.scalar_type_to_onnx[dtype], g, result, None
+            torch.onnx._type_utils.scalar_type_to_onnx[dtype], g, result, None
         )
     else:
         return g.op(
             "ConstantFill",
             sizes,
-            dtype_i=symbolic_helper.scalar_type_to_onnx[dtype],
+            dtype_i=torch.onnx._type_utils.scalar_type_to_onnx[dtype],
             input_as_shape_i=1,
             value_f=const_value,
         )

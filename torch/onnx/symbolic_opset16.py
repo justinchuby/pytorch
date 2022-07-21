@@ -25,7 +25,7 @@ Updated operators:
 
 # EDITING THIS FILE? READ THIS FIRST!
 # see Note [Edit Symbolic Files] in symbolic_helper.py
-
+import torch.onnx._type_utils
 from torch.nn.functional import (
     GRID_SAMPLE_INTERPOLATION_MODES,
     GRID_SAMPLE_PADDING_MODES,
@@ -74,7 +74,7 @@ def scatter_add(g, self, dim, index, src):
             src = g.op(
                 "Cast",
                 src,
-                to_i=symbolic_helper.cast_pytorch_to_onnx[self.type().scalarType()],
+                to_i=torch.onnx._type_utils.cast_pytorch_to_onnx[self.type().scalarType()],
             )
 
         return g.op(

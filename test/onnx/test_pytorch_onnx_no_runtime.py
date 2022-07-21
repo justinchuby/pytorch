@@ -12,6 +12,7 @@ import onnx
 
 import torch
 import torch.nn.functional as F
+import torch.onnx._type_utils
 from torch import Tensor
 from torch.onnx import symbolic_helper, symbolic_registry, utils
 from torch.onnx._globals import GLOBALS
@@ -121,8 +122,8 @@ class TestOptionalOutput(common_utils.TestCase):
             input_names=["x"],
         )
         exported = onnx.load_from_string(f.getvalue())
-        expected_elem_type = symbolic_helper.scalar_type_to_onnx[
-            symbolic_helper.scalar_type_to_pytorch_type.index(x.dtype)
+        expected_elem_type = torch.onnx._type_utils.scalar_type_to_onnx[
+            torch.onnx._type_utils.scalar_type_to_pytorch_type.index(x.dtype)
         ].value
         expected_output_type = onnx.helper.make_optional_type_proto(
             onnx.helper.make_tensor_type_proto(expected_elem_type, (dynamic_axis_name,))

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import enum
 import functools
 import inspect
 import sys
@@ -61,24 +60,19 @@ from torch.onnx._globals import GLOBALS
 
 __all__ = [
     "args_have_same_dtype",
-    "cast_pytorch_to_onnx",
     "check_training_mode",
     "dequantize_helper",
     "is_caffe2_aten_fallback",
     "parse_args",
-    "pytorch_name_to_type",
     "quantize_helper",
     "quantized_args",
     "requantize_bias_helper",
-    "scalar_name_to_pytorch",
-    "scalar_type_to_onnx",
-    "scalar_type_to_pytorch_type",
-    "ScalarType",
 ]
 
 # ---------------------------------------------------------------------------------
 # Helper functions
 # ---------------------------------------------------------------------------------
+from torch.onnx import _type_utils
 
 
 def _parse_arg(value, desc, arg_name=None, node_name=None):
@@ -436,9 +430,9 @@ def _is_scalar_list(x):
     """
     element_type = str(x.type().getElementType())
     return (
-        _is_list(x)
-        and element_type in scalar_name_to_pytorch.keys()
-        and (scalar_name_to_pytorch[element_type] in cast_pytorch_to_onnx.keys())
+            _is_list(x)
+            and _type_utils.valid_scalar_name(element_type)
+            and (_type_utils.onnx_compatible(_type_utils.scalar_name_to_torch(element_type)))
     )
 
 
@@ -554,7 +548,7 @@ def _select_helper(g, self, dim, index, apply_reshape=True):
 
     index_scalar_type = index.type().scalarType()
     if index_scalar_type is None or index_scalar_type not in ["Long", "Int"]:
-        index = g.op("Cast", index, to_i=cast_pytorch_to_onnx["Long"])
+        index = g.op("Cast", index, to_i=_type_utils.torch_to_onnx("Long"))
     return g.op("Gather", self, index, axis_i=dim)
 
 
@@ -740,11 +734,11 @@ def _interpolate_size_to_scales(g, input, output_size, dim):
     if _is_value(output_size):
         offset = 2
         offsets = g.op("Constant", value_t=torch.ones(offset, dtype=torch.float32))
-        dividend = g.op("Cast", output_size, to_i=cast_pytorch_to_onnx["Float"])
+        dividend = g.op("Cast", output_size, to_i=_type_utils.torch_to_onnx("Float"))
         divisor = _slice_helper(
             g, g.op("Shape", input), axes=[0], ends=[sys.maxsize], starts=[offset]
         )
-        divisor = g.op("Cast", divisor, to_i=cast_pytorch_to_onnx["Float"])
+        divisor = g.op("Cast", divisor, to_i=_type_utils.torch_to_onnx("Float"))
         scale_dims = g.op("Div", dividend, divisor)
         scales = g.op("Concat", offsets, scale_dims, axis_i=0)
     else:
@@ -797,7 +791,7 @@ def _interpolate_get_scales(g, scale_factor, dim):
         return g.op("Concat", offsets, scale_factor, axis_i=0)
     else:
         scale_factor = _unsqueeze_helper(g, scale_factor, [0])
-        scale_factor = g.op("Cast", scale_factor, to_i=cast_pytorch_to_onnx["Float"])
+        scale_factor = g.op("Cast", scale_factor, to_i=_type_utils.torch_to_onnx("Float"))
         scales = [scale_factor for i in range(dim - 2)]
     scale_factor = g.op("Concat", offsets, *scales, axis_i=0)
     return scale_factor
@@ -854,7 +848,7 @@ def _interpolate_helper(name, dim, interpolate_mode):
             input_size_beg = _slice_helper(
                 g, input_size, axes=[0], ends=[2], starts=[0]
             )
-            output_size = g.op("Cast", output_size, to_i=cast_pytorch_to_onnx["Long"])
+            output_size = g.op("Cast", output_size, to_i=_type_utils.torch_to_onnx("Long"))
             output_size = g.op("Concat", input_size_beg, output_size, axis_i=0)
 
             if GLOBALS.export_onnx_opset_version >= 13:
@@ -948,7 +942,7 @@ def __interpolate_helper(
             size = _unsqueeze_helper(g, size, [0])
             size = [size for i in range(rank - 2)]
             size = g.op("Concat", *size, axis_i=0)
-        size = g.op("Cast", size, to_i=cast_pytorch_to_onnx["Long"])
+        size = g.op("Cast", size, to_i=_type_utils.torch_to_onnx("Long"))
         size = g.op("Concat", input_size, size, axis_i=0)
 
         if GLOBALS.export_onnx_opset_version >= 13:
@@ -1044,6 +1038,7 @@ def _arange_cast_helper(g, end, start=None, step=None, dtype=None):
         else:
             type = scalar_type_to_pytorch_type.index(torch.get_default_dtype())
     else:
+        # TODO(justinchuby): This is a number???
         type = dtype
 
     start = g.op("Cast", start, to_i=scalar_type_to_onnx[type]) if start else None
@@ -1127,7 +1122,7 @@ def _batchnorm_helper(g, input, weight, bias, running_mean, running_var):
             )
         weight_value = torch.tensor(
             [1.0] * channel_size,
-            dtype=pytorch_name_to_type[input.type().scalarType()],
+            dtype=_type_utils.torch_to_dtype(input.type().scalarType()),
         )
         weight = g.op("Constant", value_t=weight_value)
     if bias is None or _is_none(bias):
@@ -1137,7 +1132,7 @@ def _batchnorm_helper(g, input, weight, bias, running_mean, running_var):
             )
         bias_value = torch.tensor(
             [0.0] * channel_size,
-            dtype=pytorch_name_to_type[input.type().scalarType()],
+            dtype=_type_utils.torch_to_dtype(input.type().scalarType()),
         )
         bias = g.op("Constant", value_t=bias_value)
     # If track_running_stats is set to False batch statistics are instead used during evaluation time
@@ -1274,7 +1269,7 @@ def dequantize_helper(
     tensor, scale, zero_point = unpacked_qtensors[:3]
     axis = unpacked_qtensors[3] if len(unpacked_qtensors) >= 4 else None
     axis_i = _get_const(axis, "i", "axis")
-    input_qdtype = cast_pytorch_to_onnx[tensor.type().scalarType()]
+    input_qdtype = _type_utils.torch_to_dtype(tensor.type().scalarType())
     if qdtype is None:
         if input_qdtype is not None:
             qdtype = input_qdtype
@@ -1396,133 +1391,9 @@ def _set_onnx_shape_inference(onnx_shape_inference: bool):
     GLOBALS.onnx_shape_inference = onnx_shape_inference
 
 
-# Metaprogram symbolics for each ATen native specialized cast operator.
-# For e.g. we specify a function named `_cast_uint8_t` that instantiates an
-# ONNX cast node with `to` attribute "UINT8"
-#
-# TODO: remove these once we support Type's in the JIT IR and we can once again
-# use the unified toType operator
-cast_pytorch_to_onnx = {
-    "Byte": _C_onnx.TensorProtoDataType.UINT8,
-    "Char": _C_onnx.TensorProtoDataType.INT8,
-    "Double": _C_onnx.TensorProtoDataType.DOUBLE,
-    "Float": _C_onnx.TensorProtoDataType.FLOAT,
-    "Half": _C_onnx.TensorProtoDataType.FLOAT16,
-    "Int": _C_onnx.TensorProtoDataType.INT32,
-    "Long": _C_onnx.TensorProtoDataType.INT64,
-    "Short": _C_onnx.TensorProtoDataType.INT16,
-    "Bool": _C_onnx.TensorProtoDataType.BOOL,
-    "ComplexFloat": _C_onnx.TensorProtoDataType.COMPLEX64,
-    "ComplexDouble": _C_onnx.TensorProtoDataType.COMPLEX128,
-    "BFloat16": _C_onnx.TensorProtoDataType.BFLOAT16,
-    "Undefined": _C_onnx.TensorProtoDataType.UNDEFINED,
-}
-
-scalar_name_to_pytorch = {
-    "uint8_t": "Byte",
-    "int8_t": "Char",
-    "double": "Double",
-    "float": "Float",
-    "half": "Half",
-    "int": "Int",
-    "int64_t": "Long",
-    "int16_t": "Short",
-    "bool": "Bool",
-    "complex64": "ComplexFloat",
-    "complex128": "ComplexDouble",
-    "qint8": "QInt8",
-    "quint8": "QUInt8",
-    "qint32": "QInt32",
-    "bfloat16": "BFloat16",
-}
-
-
-class ScalarType(enum.IntEnum):
-    """A human-readable name for a key into scalar_type_to_pytorch_type."""
-
-    UINT8 = 0
-    INT8 = enum.auto()
-    SHORT = enum.auto()
-    INT = enum.auto()
-    INT64 = enum.auto()
-    HALF = enum.auto()
-    FLOAT = enum.auto()
-    DOUBLE = enum.auto()
-    COMPLEX32 = enum.auto()
-    COMPLEX64 = enum.auto()
-    COMPLEX128 = enum.auto()
-    BOOL = enum.auto()
-    QINT8 = enum.auto()
-    QUINT8 = enum.auto()
-    QINT32 = enum.auto()
-    BFLOAT16 = enum.auto()
-
-
-# This indicates each scalar type's corresponding
-# torch type. Related source:
-# https://github.com/pytorch/pytorch/blob/344defc9733a45fee8d0c4d3f5530f631e823196/c10/core/ScalarType.h
-scalar_type_to_pytorch_type = (
-    torch.uint8,  # 0
-    torch.int8,  # 1
-    torch.short,  # 2
-    torch.int,  # 3
-    torch.int64,  # 4
-    torch.half,  # 5
-    torch.float,  # 6
-    torch.double,  # 7
-    torch.complex32,  # 8
-    torch.complex64,  # 9
-    torch.complex128,  # 10
-    torch.bool,  # 11
-    torch.qint8,  # 12
-    torch.quint8,  # 13
-    torch.qint32,  # 14
-    torch.bfloat16,  # 15
-)
-
-# source of truth is
-# https://github.com/pytorch/pytorch/blob/master/torch/csrc/utils/tensor_dtypes.cpp
-pytorch_name_to_type = {
-    "Byte": torch.uint8,
-    "Char": torch.int8,
-    "Double": torch.double,
-    "Float": torch.float,
-    "Half": torch.half,
-    "Int": torch.int,
-    "Long": torch.int64,
-    "Short": torch.short,
-    "Bool": torch.bool,
-    "ComplexFloat": torch.complex64,
-    "ComplexDouble": torch.complex128,
-    "QInt8": torch.qint8,
-    "QUInt8": torch.quint8,
-    "QInt32": torch.qint32,
-    "BFloat16": torch.bfloat16,
-}
-
-
 def _cast_func_template(to_i, g, input, non_blocking):
     return g.op("Cast", input, to_i=to_i)
 
-
-scalar_type_to_onnx = (
-    cast_pytorch_to_onnx["Byte"],  # 0
-    cast_pytorch_to_onnx["Char"],  # 1
-    cast_pytorch_to_onnx["Short"],  # 2
-    cast_pytorch_to_onnx["Int"],  # 3
-    cast_pytorch_to_onnx["Long"],  # 4
-    cast_pytorch_to_onnx["Half"],  # 5
-    cast_pytorch_to_onnx["Float"],  # 6
-    cast_pytorch_to_onnx["Double"],  # 7
-    cast_pytorch_to_onnx["Undefined"],  # 8
-    cast_pytorch_to_onnx["ComplexFloat"],  # 9
-    cast_pytorch_to_onnx["ComplexDouble"],  # 10
-    cast_pytorch_to_onnx["Bool"],  # 11
-    cast_pytorch_to_onnx["Char"],  # 12
-    cast_pytorch_to_onnx["Byte"],  # 13
-    cast_pytorch_to_onnx["Int"],  # 14
-    cast_pytorch_to_onnx["BFloat16"],  # 15
-)
 
 # Global set to store the list of quantized operators in the network.
 # This is currently only used in the conversion of quantized ops from PT -> C2 via ONNX.

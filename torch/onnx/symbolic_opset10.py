@@ -5,6 +5,7 @@ from typing import Sequence
 import torch
 import torch._C._onnx as _C_onnx
 import torch.onnx
+import torch.onnx._type_utils
 from torch import _C
 
 # Monkey-patch graph manipulation methods on Graph, used for the ONNX symbolics
@@ -486,7 +487,7 @@ def isfinite(g, input):
 def quantize_per_tensor(g, input, scale, zero_point, dtype):
     dtype = symbolic_helper._get_const(dtype, "i", "dtype")
     zero_point = g.op(
-        "Cast", zero_point, to_i=symbolic_helper.scalar_type_to_onnx[dtype]
+        "Cast", zero_point, to_i=torch.onnx._type_utils.scalar_type_to_onnx[dtype]
     )
     scale = g.op("Cast", scale, to_i=_C_onnx.TensorProtoDataType.FLOAT)
     return symbolic_helper.quantize_helper(g, input, scale, zero_point)
@@ -502,7 +503,7 @@ def nan_to_num(g, input, nan, posinf, neginf):
     # return the original tensor
     if not symbolic_helper._is_fp(input):
         return input
-    input_dtype = symbolic_helper.pytorch_name_to_type[input.type().scalarType()]
+    input_dtype = torch.onnx._type_utils.pytorch_name_to_type[input.type().scalarType()]
     if nan is None:
         nan = 0.0
     nan_cond = opset9.isnan(g, input)
@@ -638,7 +639,7 @@ class Quantized:
                 )
             weight_value = torch.tensor(
                 [1.0] * channel_size,
-                dtype=symbolic_helper.pytorch_name_to_type[input.type().scalarType()],
+                dtype=torch.onnx._type_utils.pytorch_name_to_type[input.type().scalarType()],
             )
             weight = g.op("Constant", value_t=weight_value)
         if bias is None or symbolic_helper._is_none(bias):
@@ -648,7 +649,7 @@ class Quantized:
                 )
             bias_value = torch.tensor(
                 [0.0] * channel_size,
-                dtype=symbolic_helper.pytorch_name_to_type[input.type().scalarType()],
+                dtype=torch.onnx._type_utils.pytorch_name_to_type[input.type().scalarType()],
             )
             bias = g.op("Constant", value_t=bias_value)
 
