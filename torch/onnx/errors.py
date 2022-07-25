@@ -57,9 +57,9 @@ class SymbolicValueError(OnnxExporterError):
 
     def __init__(self, msg: str, value: _C.Value):
         message = (
-            f"{msg} (Caused by the value '{value}' [type '{value.type()}'] in the "
-            f"TorchScript graph. The containing node has kind '{value.node().kind()}'.)"
-            f"\n(from {value.node().sourceRange() or 'unknown source code location'})"
+            f"{msg}  [Caused by the value '{value}' (type '{value.type()}') in the "
+            f"TorchScript graph. The containing node has kind '{value.node().kind()}'.] "
+            f"\n    (node defined in {value.node().sourceRange() or 'unknown source code location'})"
         )
 
         try:
@@ -67,16 +67,22 @@ class SymbolicValueError(OnnxExporterError):
             message += "\n\n"
             message += textwrap.indent(
                 (
-                    "Inputs:\n\n"
-                    + "\n".join(
-                        f"    {i}: {input_} [type '{input_.type()}']"
-                        for i, input_ in enumerate(value.node().inputs())
+                    "Inputs:\n"
+                    + (
+                        "\n".join(
+                            f"    #{i}: {input_}  (type '{input_.type()}')"
+                            for i, input_ in enumerate(value.node().inputs())
+                        )
+                        or "    Empty"
                     )
-                    + "\n\n"
-                    + "Outputs:\n\n"
-                    + "\n".join(
-                        f"    {i}: {output} [type '{output.type()}']"
-                        for i, output in enumerate(value.node().outputs())
+                    + "\n"
+                    + "Outputs:\n"
+                    + (
+                        "\n".join(
+                            f"    #{i}: {output}  (type '{output.type()}')"
+                            for i, output in enumerate(value.node().outputs())
+                        )
+                        or "    Empty"
                     )
                 ),
                 "    ",
