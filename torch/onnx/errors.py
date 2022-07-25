@@ -59,10 +59,12 @@ class SymbolicValueError(OnnxExporterError):
         message = (
             f"{msg} (Caused by the value '{value}' [type '{value.type()}'] in the "
             f"TorchScript graph. The containing node has kind '{value.node().kind()}'.)"
+            f"\n(from {value.node().sourceRange() or 'unknown source code location'})"
         )
 
         try:
             # Add its input and output to the message.
+            message += "\n\n"
             message += textwrap.indent(
                 (
                     "Inputs:\n\n"
