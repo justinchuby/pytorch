@@ -132,7 +132,7 @@ def _parse_arg(
         if desc == "is":
             for v in node.inputs():
                 element_node = v.node()
-                if element_node.kind() != "onnx::Constant":
+                if element_node.kind() == "onnx::Constant":
                     raise errors.SymbolicValueError(
                         f"Failed to export an ONNX attribute '{element_node.kind()}' "
                         f"(node '{element_node}' in list node {node}) "
@@ -452,7 +452,7 @@ def _is_scalar_list(x: _C.Value) -> bool:
     typing.cast(_C.ListType, x_type)
     element_type = str(x.type().getElementType())
     return (
-        and _type_utils.valid_torch_name(element_type)
+        _type_utils.valid_torch_name(element_type)
         and _type_utils.ScalarType.from_name(element_type).onnx_compatible()
     )
 
@@ -699,8 +699,7 @@ def _unsqueeze_helper(g, input, axes_i):
     # Tensor type
     if GLOBALS.export_onnx_opset_version < 13:
         raise errors.SymbolicValueError(
-            f"Opset version must be >= 13 for Unsqueeze with dynamic axes.",
-            input
+            f"Opset version must be >= 13 for Unsqueeze with dynamic axes.", input
         )
     return g.op("Unsqueeze", input, axes_i[0])
 
@@ -714,15 +713,13 @@ def _squeeze_helper(g, input, axes_i):
     # Tensor type
     if GLOBALS.export_onnx_opset_version < 13:
         raise errors.SymbolicValueError(
-            f"Opset version must be >= 13 for Squeeze with dynamic axes.",
-            input
+            f"Opset version must be >= 13 for Squeeze with dynamic axes.", input
         )
     axes_t = axes_i[0]
     axes_rank = _get_tensor_rank(axes_t)
     if axes_rank > 1:
         raise errors.SymbolicValueError(
-            "For Squeeze axses as input, the axes rank must be one in ONNX spec.",
-            input
+            "For Squeeze axses as input, the axes rank must be one in ONNX spec.", input
         )
     elif axes_rank == 0:
         # The axes is a scalar. Unsqueeze it to a rank 1 tensor.
@@ -1151,7 +1148,7 @@ def _batchnorm_helper(g, input, weight, bias, running_mean, running_var):
         if channel_size is None:
             raise errors.SymbolicValueError(
                 "Unsupported: ONNX export of batch_norm for unknown channel size.",
-                input
+                input,
             )
         weight_value = torch.tensor(
             [1.0] * channel_size,
@@ -1162,7 +1159,7 @@ def _batchnorm_helper(g, input, weight, bias, running_mean, running_var):
         if channel_size is None:
             raise errors.SymbolicValueError(
                 "Unsupported: ONNX export of batch_norm for unknown channel size.",
-                input
+                input,
             )
         bias_value = torch.tensor(
             [0.0] * channel_size,
