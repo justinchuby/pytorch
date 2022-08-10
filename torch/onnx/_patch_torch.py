@@ -15,7 +15,7 @@ _ATTR_PATTERN = re.compile("^(.+)_(([ifstgz])|(ty))$")
 
 
 # TODO(#78694): Refactor the patching process to make it more transparent to users.
-def _graph_op(
+def graph_op(
     g: _C.Graph,
     opname: str,
     *raw_args: _C.Value,
@@ -81,12 +81,12 @@ def _const_if_tensor(g: _C.Graph, arg):
         return arg
     if isinstance(arg, _C.Value):
         return arg
-    return _graph_op(g, "Constant", value_z=arg)
+    return graph_op(g, "Constant", value_z=arg)
 
 
 # Generate an ONNX ATen op node.
 def _aten_op(g: _C.Graph, operator: str, *args, overload_name: str = "", **kwargs):
-    return _graph_op(
+    return graph_op(
         g,
         "aten::ATen",
         *args,
@@ -256,7 +256,7 @@ def _node_getitem(self, k):
     return getattr(self, sel)(k)
 
 
-torch._C.Graph.op = _graph_op  # type: ignore[attr-defined]
+torch._C.Graph.op = graph_op  # type: ignore[attr-defined]
 torch._C.Graph.at = _aten_op  # type: ignore[attr-defined]
 torch._C.Block.op = _block_op  # type: ignore[attr-defined]
 torch._C.Graph.constant = _graph_constant  # type: ignore[attr-defined]
