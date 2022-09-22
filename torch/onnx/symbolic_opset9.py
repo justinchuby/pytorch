@@ -6350,7 +6350,7 @@ def prim_loop(g: GraphContext, *inputs, **attrs) -> List[_C.Value]:
             ):
                 b_in.setType(inputs[i + 1].type())
         torch._C._jit_pass_onnx_block(
-            block, new_block, operator_export_type, env, False  # type:ignore[arg-type]
+            block, new_block, operator_export_type, env, False
         )
     fixed_outputs = torch._C._jit_pass_fixup_onnx_controlflow_node(
         new_node, opset_version
@@ -6410,8 +6410,8 @@ def prim_if(g: GraphContext, *inputs, **attrs) -> List[_C.Value]:
         env = torch._C._jit_pass_onnx_block(
             current_b,
             block,
-            operator_export_type,  # type:ignore[arg-type]
-            env,  # type:ignore[arg-type]
+            operator_export_type,
+            env,
             True,
         )
         if_output_list = list(n.outputs())
@@ -6440,7 +6440,7 @@ def prim_if(g: GraphContext, *inputs, **attrs) -> List[_C.Value]:
             torch._C._jit_pass_onnx_block(
                 b,
                 new_block,
-                operator_export_type,  # type:ignore[arg-type]
+                operator_export_type,
                 env,
                 False,
             )
