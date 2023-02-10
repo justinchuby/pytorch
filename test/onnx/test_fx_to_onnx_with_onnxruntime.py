@@ -8,7 +8,7 @@ import unittest
 
 from typing import Any, Callable, Sequence, Tuple, Union
 
-# import onnxruntime  # type: ignore[import]
+import onnxruntime as ort
 import onnx.reference
 import onnx_test_common
 
@@ -27,9 +27,12 @@ def _run_onnx_reference_runtime(
     pytorch_inputs: Tuple[Any, ...],
     verbose: int = 10,
 ) -> Sequence[Any]:
-    session = onnx.reference.ReferenceEvaluator(onnx_model, verbose=verbose)
+    session = ort.InferenceSession(onnx_model)
+    input_names = [i.name for i in session.get_inputs()]
+
+    # session = onnx.reference.ReferenceEvaluator(onnx_model, verbose=verbose)
     return session.run(
-        None, {k: v.cpu().numpy() for k, v in zip(session.input_names, pytorch_inputs)}
+        None, {k: v.cpu().numpy() for k, v in zip(input_names, pytorch_inputs)}
     )
 
 
@@ -217,6 +220,7 @@ class TestFxToOnnxWithOnnxRuntime(onnx_test_common._TestONNXRuntime):
                     fake_model,
                     *fake_args,
                     use_binary_format=False,
+                    opset_version=self.opset_version,
                 )
 
             # Tasks done by the following block.

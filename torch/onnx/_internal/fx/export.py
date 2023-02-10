@@ -475,6 +475,7 @@ def _validate_op_between_ort_torch(
     node: torch.fx.Node, symbolic_fn, torch_args, torch_kwargs
 ):
     """Validate the op between ONNX Runtime and PyTorch."""
+    import traceback
     # op-level validation
     # TODO(titaiwang): Change ORTEvaluator to ReferenceEvaluator
     # Symbolic_fn should have the same output as node.target (torch ops)
@@ -497,7 +498,8 @@ def _validate_op_between_ort_torch(
                         f"Please check the implementation of {symbolic_fn}."
                     )
     except Exception as e:
-        warnings.warn(f"ORT fails to run with error: {e}.")
+        traceback.print_exception(e)
+        # warnings.warn(f"ORT fails to run with error: {e}.")
 
 
 def _export_fx_to_onnxscript(fx_module_with_metadata, opset_version):
