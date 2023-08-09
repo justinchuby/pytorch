@@ -771,6 +771,9 @@ class AbstractImplCtx:
 
 
 def infer_schema(prototype_function: typing.Callable) -> str:
+    # Update the function signature by resolving type annotations when
+    # postponed evaluation is turned on
+    prototype_function.__annotations__ = typing.get_type_hints(prototype_function)
     sig = inspect.signature(prototype_function)
 
     def error_fn(what):

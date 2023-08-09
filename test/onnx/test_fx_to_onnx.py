@@ -4,6 +4,7 @@ from __future__ import annotations
 import tempfile
 
 import onnx
+import onnxscript
 import pytorch_test_common
 import torch
 from torch import nn
@@ -379,6 +380,60 @@ class TestFxToOnnx(pytorch_test_common.ExportTestCase):
             _ = torch.onnx.dynamo_export(
                 fake_model, real_x, export_options=export_options
             )
+
+    def test_dynamo_export_empty_custom_opset_with_no_implementation(self):
+        from torch import _custom_ops
+        @_custom_ops.custom_op("mylibrary::foo_op")
+        def foo_op(x: torch.Tensor) -> torch.Tensor:
+            ...
+
+        print(type(foo_op))
+        @foo_op.impl_abstract()
+        def foo_op_impl_abstract(x):
+            return torch.empty_like(x)
+
+        @foo_op.impl("cpu")
+        def foo_op_impl(x):
+            return x + 1
+
+        torch._dynamo.allow_in_graph(foo_op)
+
+        class MyLibrary(torch.nn.Module):
+            def forward(self, x, y, z):
+                return foo_op(x) - y + z
+
+        custom_opset = onnxscript.values.Opset(domain="MyLibrary", version=1)
+
+        @onnxscript.script()
+        def foo_onnx(x):
+            return custom_opset.CustomOp(x)
+
+        x = torch.randn(3)
+
+        y = torch.randn(3)
+
+        z = torch.randn(3)
+
+        registry = torch.onnx.OnnxRegistry()
+
+        registry.register_op(foo_onnx, namespace="mylibrary", op_name="foo_op")
+
+        export_output = torch.onnx.dynamo_export(
+            MyLibrary(),
+            x,
+            y,
+            z,
+            export_options=torch.onnx.ExportOptions(onnx_registry=registry),
+        )
+
+        model_onnx_proto = export_output.model_proto
+
+        self.assertTrue(
+            any(
+                func == foo_onnx.to_function_proto()
+                for func in model_onnx_proto.functions
+            )
+        )
 
 
 if __name__ == "__main__":
