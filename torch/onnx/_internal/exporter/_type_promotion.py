@@ -106,8 +106,8 @@ class ElementwiseTypePromotionRule(TypePromotionRule):
         self.promotion_kind = promotion_kind
 
     def promote_types(
-        self, op: onnxscript.values.Opset, args: tuple[ir.Value | float | int | bool, ...]
-    ) -> tuple[ir.Value | float | int | bool, ...]:
+        self, op: onnxscript.values.Opset, args: tuple[ir.Value, ...]
+    ) -> tuple[ir.Value, ...]:
         promoted_args = list(args)
         promoted_types = []
         for idx in self.promote_args_positions:
