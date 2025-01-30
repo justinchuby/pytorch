@@ -553,8 +553,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         self.assert_export(model, (x, y, None))
         self.assert_export(model, (x, None, z))
-
-    @skipTraceTest()  # tracing is verified with different set of inputs. See above.
+  # tracing is verified with different set of inputs. See above.
     def test_mixed_optional_default_tensor_script(self):
         class Model(torch.nn.Module):
             def forward(
@@ -637,8 +636,7 @@ class DynamoExporterTest(common_utils.TestCase):
         # and we fail when trying to run ORT.
         with self.assertRaisesRegex(ValueError, "got too many positional inputs"):
             self.assert_export(model, (x, y))
-
-    @skipTraceTest()  # tracing is verified with different set of inputs. See above.
+  # tracing is verified with different set of inputs. See above.
     def test_all_optional_default_tensor_script(self):
         class Model(torch.nn.Module):
             def forward(
@@ -782,8 +780,7 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.randn(2, 3)
         y1 = torch.randn(2, 3)
         self.assert_export(Model(), (x, (None, y1)))
-
-    @skipTraceTest()  # tracing is verified with different set of inputs. See above.
+  # tracing is verified with different set of inputs. See above.
     def test_tuple_of_optional_default_tensor_script(self):
         class Model(torch.nn.Module):
             def forward(
@@ -10963,7 +10960,6 @@ class DynamoExporterTest(common_utils.TestCase):
         name_fn=lambda module_class: module_class.__name__,
     )
     @common_utils.parametrize("x_size", (0, 1), name_fn=lambda x_size: str(x_size))
-    @skipTraceTest()
     def test_optional_output(self, module_class: type[torch.nn.Module], x_size: int):
         # Need scripting to preserve control flow for this test to be
         # meaningful.
@@ -11001,7 +10997,6 @@ class DynamoExporterTest(common_utils.TestCase):
             input_names=["x"],
         )
 
-    @skipTraceTest()
     def test_uninitialized_optional(self):
         class Module(torch.nn.Module):
             def forward(self, y):
