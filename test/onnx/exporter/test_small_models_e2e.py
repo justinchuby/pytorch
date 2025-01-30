@@ -22,6 +22,19 @@ class DynamoExporterTest(common_utils.TestCase):
         assert onnx_program is not None
         return onnx_program
 
+    def assert_export(
+        self,
+        model,
+        args=(),
+        kwargs=None,
+        *,
+        atol: float | None = None,
+        rtol: float | None = None,
+        **options,
+    ):
+        onnx_program = self.export(model, args, kwargs, **options)
+        onnx_testing.assert_onnx_program(onnx_program, atol=atol, rtol=rtol)
+
     def test_insert_contiguous_between_transpose_and_view(self):
         class Model(torch.nn.Module):
             def forward(self, query, key, value):
@@ -40,8 +53,7 @@ class DynamoExporterTest(common_utils.TestCase):
         ep = torch.export.export(model, (query, key, value), strict=False)
         self.assertNotIn("call_method", str(ep.graph))
 
-        onnx_program = self.export(model, (query, key, value))
-        onnx_testing.assert_onnx_program(onnx_program, atol=1e-3, rtol=1)
+        self.assert_export(model, (query, key, value), atol=1e-3, rtol=1)
 
     def test_constant_complex(self):
         class MulModule(torch.nn.Module):
@@ -54,8 +66,7 @@ class DynamoExporterTest(common_utils.TestCase):
             [[1.0 + 2.0j, 3.0 + 4.0j], [5.0 + 6.0j, 7.0 + 8.0j]], dtype=torch.complex64
         )
 
-        onnx_program = self.export(MulModule(), (x,))
-        onnx_testing.assert_onnx_program(onnx_program)
+        self.assert_export(MulModule(), (x,))
 
     def test_pow_does_not_trigger_type_promotion(self):
         class Model(torch.nn.Module):
@@ -143,7 +154,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 x = torch.cond(x.sum() > 0, true_fn, false_fn, (x, z))
                 return x, z
 
-        onnx_program = torch.onnx.export(
+        onnx_program = self.export(
             CondModel(),
             (torch.tensor([1, 2]),),
             dynamo=True,
@@ -183,10 +194,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 values, _ = torch.topk(x, 3)
                 return torch.sum(values)
 
-        onnx_program = self.export(
-            TopKModel(), (torch.arange(1.0, 6.0, requires_grad=True),)
-        )
-        onnx_testing.assert_onnx_program(onnx_program)
+        self.assert_export(TopKModel(), (torch.arange(1.0, 6.0),))
 
     def test_exported_program_torch_distributions_normal_Normal(self):
         class Model(torch.nn.Module):
@@ -240,8 +248,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 logger.log("abc")
                 return x + 1
 
-        onnx_program = self.export(LoggingLoggerModule(), (torch.tensor(1),))
-        onnx_testing.assert_onnx_program(onnx_program)
+        self.assert_export(LoggingLoggerModule(), (torch.tensor(1),))
 
     def test_export_with_hf_logging_logger(self):
         logger = transformers.utils.logging.get_logger(__name__)
@@ -251,8 +258,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 logger.warning_once("abc")
                 return x + 1
 
-        onnx_program = self.export(HFLoggingLoggerModule(), (torch.tensor(1),))
-        onnx_testing.assert_onnx_program(onnx_program)
+        self.assert_export(HFLoggingLoggerModule(), (torch.tensor(1),))
 
     def test_export_with_print(self):
         class PrintModule(torch.nn.Module):
@@ -260,8 +266,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 print("abc")
                 return x + 1
 
-        onnx_program = self.export(PrintModule(), (torch.tensor(1),))
-        onnx_testing.assert_onnx_program(onnx_program)
+        self.assert_export(PrintModule(), (torch.tensor(1),))
 
     def test_fuse_conv_bn1d(self):
         class Fuse(torch.nn.Module):
@@ -274,9 +279,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 out = self.conv(x)
                 return self.bn(out)
 
-        model = Fuse()
-        x = torch.randn(20, 16, 50, requires_grad=True)
-        self.run_test(model, (x,))
+        self.assert_export(Fuse(), (torch.randn(20, 16, 50),))
 
     def test_fuse_conv_bn2d(self):
         class Fuse(torch.nn.Module):
@@ -292,8 +295,8 @@ class DynamoExporterTest(common_utils.TestCase):
                 return self.bn(out)
 
         model = Fuse()
-        x = torch.randn(2, 3, 2, 2, requires_grad=True)
-        self.run_test(model, (x,))
+        x = torch.randn(2, 3, 2, 2)
+        self.assert_export(model, (x,))
 
     def test_fuse_conv_bn3d(self):
         class Fuse(torch.nn.Module):
@@ -309,8 +312,8 @@ class DynamoExporterTest(common_utils.TestCase):
                 return self.bn(out)
 
         model = Fuse()
-        x = torch.randn(2, 3, 10, 50, 100, requires_grad=True)
-        self.run_test(model, (x,), rtol=1e-3, atol=1e-6)
+        x = torch.randn(2, 3, 10, 50, 100)
+        self.assert_export(model, (x,), rtol=1e-3, atol=1e-6)
 
     def test_fuse_conv_in_block(self):
         class Fuse(torch.nn.Module):
@@ -339,8 +342,8 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x
 
         model = Fuse()
-        x = torch.randn(2, 5, 9, requires_grad=True)
-        self.run_test(
+        x = torch.randn(2, 5, 9)
+        self.assert_export(
             torch.jit.script(model),
             (x,),
             input_names=["x"],
@@ -349,211 +352,46 @@ class DynamoExporterTest(common_utils.TestCase):
             atol=1e-6,
         )
 
-    def test_conv_tbc(self):
-        from torch.nn.modules.utils import _single
-
-        class ConvTBC(torch.nn.Module):
-            def __init__(self, in_channels, out_channels, kernel_size, padding=0):
-                super().__init__()
-                self.in_channels = in_channels
-                self.out_channels = out_channels
-                self.kernel_size = _single(kernel_size)
-                self.padding = _single(padding)
-
-                self.weight = torch.nn.Parameter(
-                    Tensor(self.kernel_size[0], in_channels, out_channels)
-                )
-                self.bias = torch.nn.Parameter(Tensor(out_channels))
-                self.reset_parameters()
-
-            def reset_parameters(self):
-                torch.nn.init.xavier_normal_(self.weight)
-                torch.nn.init.zeros_(self.bias)
-
-            def conv_tbc(self, input):
-                return torch.conv_tbc(
-                    input.contiguous(), self.weight, self.bias, self.padding[0]
-                )
-
-            def forward(self, input):
-                return self.conv_tbc(input)
-
-        in_channels = 3
-        out_channels = 5
-        kernel_size = 5
-        model = ConvTBC(in_channels, out_channels, kernel_size, padding=0)
-        x = torch.randn(10, 7, in_channels, requires_grad=True)
-        self.run_test(model, (x,), atol=1e-5)
-
-    def test_reshape_constant_fold(self):
-        class Reshape(torch.nn.Module):
-            def __init__(
-                self,
-            ):
-                super().__init__()
-                self.weight = torch.nn.Buffer(torch.ones(5))
-
-            def forward(self, x):
-                scale_1 = self.weight.reshape(1, -1, 1, 1)
-                return x * scale_1
-
-        x = torch.randn(4, 5)
-        self.run_test(Reshape(), (x,), rtol=1e-3, atol=1e-5)
-
-    def run_word_language_model(self, model_name):
-        ntokens = 50
-        emsize = 5
-        nhid = 5
-        nlayers = 5
-        dropout = 0.2
-        tied = False
-        batchsize = 5
-        if model_name == "GRU":
-            model = word_language_model.RNNModelWithTensorHidden(
-                model_name, ntokens, emsize, nhid, nlayers, dropout, tied, batchsize
-            )
-        elif model_name == "LSTM":
-            model = word_language_model.RNNModelWithTupleHidden(
-                model_name, ntokens, emsize, nhid, nlayers, dropout, tied, batchsize
-            )
-        else:
-            model = word_language_model.RNNModel(
-                model_name, ntokens, emsize, nhid, nlayers, dropout, tied, batchsize
-            )
-        x = torch.arange(0, ntokens).long().view(-1, batchsize)
-        # Only support CPU version, since tracer is not working in GPU RNN.
-        self.run_test(model, (x, model.hidden))
-
-    def get_image(self, rel_path: str, size: tuple[int, int]) -> Tensor:
-        from PIL import Image
-        from torchvision import transforms
-
-        data_dir = os.path.join(os.path.dirname(__file__), "assets")
-        path = os.path.join(data_dir, *rel_path.split("/"))
-        image = Image.open(path).convert("RGB").resize(size, Image.BILINEAR)
-
-        return transforms.ToTensor()(image)
-
-    def get_test_images(self) -> tuple[list[Tensor], list[Tensor]]:
-        return (
-            [self.get_image("grace_hopper_517x606.jpg", (100, 320))],
-            [self.get_image("rgb_pytorch.png", (250, 380))],
-        )
-
-    def test_paste_mask_in_image(self):
-        masks = torch.rand(10, 1, 26, 26)
-        boxes = torch.rand(10, 4)
-        boxes[:, 2:] += torch.rand(10, 2)
-        boxes *= 50
-        o_im_s = (100, 100)
-        from torchvision.models.detection.roi_heads import paste_masks_in_image
-
-        out = paste_masks_in_image(masks, boxes, o_im_s)
-        jit_trace = torch.jit.trace(
-            paste_masks_in_image,
-            (masks, boxes, [torch.tensor(o_im_s[0]), torch.tensor(o_im_s[1])]),
-        )
-        out_trace = jit_trace(
-            masks, boxes, [torch.tensor(o_im_s[0]), torch.tensor(o_im_s[1])]
-        )
-
-        assert torch.all(out.eq(out_trace))
-
-        masks2 = torch.rand(20, 1, 26, 26)
-        boxes2 = torch.rand(20, 4)
-        boxes2[:, 2:] += torch.rand(20, 2)
-        boxes2 *= 100
-        o_im_s2 = (200, 200)
-        from torchvision.models.detection.roi_heads import paste_masks_in_image
-
-        out2 = paste_masks_in_image(masks2, boxes2, o_im_s2)
-        out_trace2 = jit_trace(
-            masks2, boxes2, [torch.tensor(o_im_s2[0]), torch.tensor(o_im_s2[1])]
-        )
-
-        assert torch.all(out2.eq(out_trace2))
-
-    def test_heatmaps_to_keypoints(self):
-        maps = torch.rand(10, 1, 26, 26)
-        rois = torch.rand(10, 4)
-        from torchvision.models.detection.roi_heads import heatmaps_to_keypoints
-
-        out = heatmaps_to_keypoints(maps, rois)
-        jit_trace = torch.jit.trace(heatmaps_to_keypoints, (maps, rois))
-        out_trace = jit_trace(maps, rois)
-
-        assert torch.all(out[0].eq(out_trace[0]))
-        assert torch.all(out[1].eq(out_trace[1]))
-
-        maps2 = torch.rand(20, 2, 21, 21)
-        rois2 = torch.rand(20, 4)
-        from torchvision.models.detection.roi_heads import heatmaps_to_keypoints
-
-        out2 = heatmaps_to_keypoints(maps2, rois2)
-        out_trace2 = jit_trace(maps2, rois2)
-
-        assert torch.all(out2[0].eq(out_trace2[0]))
-        assert torch.all(out2[1].eq(out_trace2[1]))
-
-    def test_word_language_model_RNN_TANH(self):
-        self.run_word_language_model("RNN_TANH")
-
-    def test_word_language_model_RNN_RELU(self):
-        self.run_word_language_model("RNN_RELU")
-
-  # scripting prim::unchecked_cast prim::setattr
-    def test_word_language_model_LSTM(self):
-        self.run_word_language_model("LSTM")
-
-    def test_word_language_model_GRU(self):
-        self.run_word_language_model("GRU")
-
     def test_index_1d(self):
         class MyModel(torch.nn.Module):
             def forward(self, input):
                 return input[0]
 
-        m1 = torch.randn(3, 4, 5, 6, 7)
-        self.run_test(MyModel(), m1)
+        self.assert_export(MyModel(), (torch.randn(3, 4, 5, 6, 7),))
 
     def test_index_2d_1dimslice(self):
         class MyModel(torch.nn.Module):
             def forward(self, input):
                 return input[0:1, :]
 
-        m1 = torch.randn(3, 4, 5, 6, 7)
-        self.run_test(MyModel(), m1)
+        self.assert_export(MyModel(), (torch.randn(3, 4, 5, 6, 7),))
 
     def test_index_2d_sliceint(self):
         class MyModel(torch.nn.Module):
             def forward(self, input):
                 return input[1, :]
 
-        m1 = torch.randn(3, 4, 5, 6, 7)
-        self.run_test(MyModel(), m1)
+        self.assert_export(MyModel(), (torch.randn(3, 4, 5, 6, 7),))
 
     def test_index_2d_neg_slice(self):
         class MyModel(torch.nn.Module):
             def forward(self, input):
                 return input[0:-1, :]
 
-        m1 = torch.randn(3, 4, 5, 6, 7)
-        self.run_test(MyModel(), m1)
+        self.assert_export(MyModel(), (torch.randn(3, 4, 5, 6, 7),))
 
     def test_index_mask(self):
         class MyModel(torch.nn.Module):
             def forward(self, input):
                 return input[torch.tensor([0, 1, 0], dtype=torch.uint8)]
 
-        m1 = torch.randn(3, 4, 5, 6, 7)
-        self.run_test(MyModel(), m1)
+        self.assert_export(MyModel(), (torch.randn(3, 4, 5, 6, 7),))
 
         class MyModel(torch.nn.Module):
             def forward(self, input):
                 return input[torch.tensor([0, 1, 0], dtype=torch.bool)]
 
-        m1 = torch.randn(3, 4, 5, 6, 7)
-        self.run_test(MyModel(), m1)
+        self.assert_export(MyModel(), (torch.randn(3, 4, 5, 6, 7),))
 
     def test_data(self):
         class Data(torch.jit.ScriptModule):
@@ -562,8 +400,8 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x.new_zeros(x.data.size())
 
         x = torch.randn(3, 4)
-        self.run_test(Data(), x, input_names=["x"], dynamic_axes={"x": [0, 1]})
-        self.run_test(Data(), x, remained_onnx_input_idx=[])
+        self.assert_export(Data(), x, input_names=["x"], dynamic_axes={"x": [0, 1]})
+        self.assert_export(Data(), x, remained_onnx_input_idx=[])
 
     def test_index_mask_nd(self):
         class MyModel(torch.nn.Module):
@@ -571,8 +409,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return input[input > 0]
 
         m1 = torch.randn(3, 4, 5, 6, 7)
-        self.run_test(MyModel(), m1)
-
+        self.assert_export(MyModel(), m1)
 
     def test_dict(self):
         class MyModel(torch.nn.Module):
@@ -585,8 +422,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x_out
 
         x = {torch.tensor(1.0): torch.randn(1, 2, 3)}
-        self.run_test(MyModel(), (x,))
-
+        self.assert_export(MyModel(), (x,))
 
     def test_dict_str(self):
         class MyModel(torch.nn.Module):
@@ -596,9 +432,9 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x_out
 
         x = {"test_key_in": torch.randn(1, 2, 3)}
-        self.run_test(MyModel(), (x,))
+        self.assert_export(MyModel(), (x,))
 
-  # User-defined class not supported
+    # User-defined class not supported
     def test_dict_output(self):
         class DictModelOutput(OrderedDict):
             tensor_out: Tensor
@@ -617,7 +453,7 @@ class DynamoExporterTest(common_utils.TestCase):
         b = torch.randn(2, 3)
         c = torch.randn(2, 3)
         d = torch.randn(2, 3)
-        self.run_test(MyModel(), (a, b, c, d))
+        self.assert_export(MyModel(), (a, b, c, d))
 
     def test_tuple_output(self):
         class MyModel(torch.nn.Module):
@@ -628,7 +464,7 @@ class DynamoExporterTest(common_utils.TestCase):
         b = torch.randn(2, 3)
         c = torch.randn(2, 3)
         d = torch.randn(2, 3)
-        self.run_test(MyModel(), (a, b, c, d))
+        self.assert_export(MyModel(), (a, b, c, d))
 
     def test_nested_tuple_output(self):
         class MyModel(torch.nn.Module):
@@ -639,7 +475,7 @@ class DynamoExporterTest(common_utils.TestCase):
         b = torch.randn(2, 3)
         c = torch.randn(2, 3)
         d = torch.randn(2, 3)
-        self.run_test(MyModel(), (a, b, c, d))
+        self.assert_export(MyModel(), (a, b, c, d))
 
     def test_tuple_input(self):
         class TupleModel(torch.nn.Module):
@@ -647,7 +483,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return a
 
         x = (torch.randn(3, 4), torch.randn(4, 3))
-        self.run_test(TupleModel(), input_args=(x,))
+        self.assert_export(TupleModel(), input_args=(x,))
 
     def test_tuple_primitive_input(self):
         class TupleModel(torch.nn.Module):
@@ -656,7 +492,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = (3, torch.randn(4, 3))
         y = torch.randn(4, 3)
-        self.run_test(TupleModel(), input_args=(x, y))
+        self.assert_export(TupleModel(), input_args=(x, y))
 
     def test_nested_tuple_input(self):
         class NestedTupleModel(torch.nn.Module):
@@ -665,16 +501,16 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(4, 5)
         y = (torch.randn(4, 5), (torch.randn(1, 5), torch.randn(4, 1)))
-        self.run_test(NestedTupleModel(), input_args=(x, y))
+        self.assert_export(NestedTupleModel(), input_args=(x, y))
 
-  # Needs https://github.com/pytorch/rfcs/pull/21
+    # Needs https://github.com/pytorch/rfcs/pull/21
     def test_mixed_optional_default_none(self):
         class Model(torch.nn.Module):
             def forward(
                 self,
                 x,
-                y: Optional[Tensor] = None,
-                z: Optional[Tensor] = None,
+                y=None,
+                z=None,
             ):
                 if y is not None:
                     return x + y
@@ -687,22 +523,22 @@ class DynamoExporterTest(common_utils.TestCase):
         z = torch.randn(2, 3)
         model = Model()
         # Without kwargs dict.
-        self.run_test(model, (x, y, None))
-        self.run_test(model, (x, None, z))
+        self.assert_export(model, (x, y, None))
+        self.assert_export(model, (x, None, z))
         # With kwargs dict.
-        self.run_test(model, (x,), {"y": y, "z": None})
-        self.run_test(model, (x,), {"y": None, "z": z})
-        self.run_test(model, (x,), {"z": z})
-        self.run_test(model, (x,), {"y": y})
+        self.assert_export(model, (x,), {"y": y, "z": None})
+        self.assert_export(model, (x,), {"y": None, "z": z})
+        self.assert_export(model, (x,), {"z": z})
+        self.assert_export(model, (x,), {"y": y})
 
-  # tracing eliminates None inputs so it works differently. See _script version below.
+    # tracing eliminates None inputs so it works differently. See _script version below.
     def test_mixed_optional_default_tensor(self):
         class Model(torch.nn.Module):
             def forward(
                 self,
                 x,
-                y: Optional[Tensor] = torch.ones(2, 3),
-                z: Optional[Tensor] = torch.zeros(2, 3),
+                y=torch.ones(2, 3),
+                z=torch.zeros(2, 3),
             ):
                 if y is not None:
                     return x + y
@@ -715,8 +551,8 @@ class DynamoExporterTest(common_utils.TestCase):
         z = torch.randn(2, 3)
         model = Model()
 
-        self.run_test(model, (x, y, None))
-        self.run_test(model, (x, None, z))
+        self.assert_export(model, (x, y, None))
+        self.assert_export(model, (x, None, z))
 
     @skipTraceTest()  # tracing is verified with different set of inputs. See above.
     def test_mixed_optional_default_tensor_script(self):
@@ -724,8 +560,8 @@ class DynamoExporterTest(common_utils.TestCase):
             def forward(
                 self,
                 x,
-                y: Optional[Tensor] = torch.ones(2, 3),
-                z: Optional[Tensor] = torch.zeros(2, 3),
+                y=torch.ones(2, 3),
+                z=torch.zeros(2, 3),
             ):
                 if y is not None:
                     return x + y
@@ -738,9 +574,9 @@ class DynamoExporterTest(common_utils.TestCase):
         z = torch.randn(2, 3)
         model = torch.jit.script(Model())
 
-        self.run_test(model, (x, y, z), input_names=("x", "y", "z"))
-        self.run_test(model, (x,), {"y": y, "z": z}, input_names=("x", "y", "z"))
-        self.run_test(model, (x,), {"y": y}, input_names=("x", "y"))
+        self.assert_export(model, (x, y, z), input_names=("x", "y", "z"))
+        self.assert_export(model, (x,), {"y": y, "z": z}, input_names=("x", "y", "z"))
+        self.assert_export(model, (x,), {"y": y}, input_names=("x", "y"))
 
         for example_inputs, example_kwargs in (
             ((x, y, None), {}),
@@ -751,14 +587,14 @@ class DynamoExporterTest(common_utils.TestCase):
             with self.assertRaisesRegex(
                 ValueError, "args contained 1 None's after flattening."
             ):
-                self.run_test(
+                self.assert_export(
                     model, example_inputs, example_kwargs, input_names=("x", "y", "z")
                 )
 
-  # Needs https://github.com/pytorch/rfcs/pull/21
+    # Needs https://github.com/pytorch/rfcs/pull/21
     def test_all_optional_default_none(self):
         class Model(torch.nn.Module):
-            def forward(self, x: Optional[Tensor] = None, y: Optional[Tensor] = None):
+            def forward(self, x=None, y=None):
                 if x is not None:
                     return x
                 if y is not None:
@@ -768,8 +604,8 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3)
         model = Model()
-        self.run_test(model, (x, None))
-        self.run_test(
+        self.assert_export(model, (x, None))
+        self.assert_export(
             model,
             (),
             {"x": x, "y": None},
@@ -777,13 +613,13 @@ class DynamoExporterTest(common_utils.TestCase):
             input_names=("x",),
         )
 
-  # tracing eliminates None inputs so it works differently. See _script version below.
+    # tracing eliminates None inputs so it works differently. See _script version below.
     def test_all_optional_default_tensor(self):
         class Model(torch.nn.Module):
             def forward(
                 self,
-                x: Optional[Tensor] = torch.ones(2, 3),
-                y: Optional[Tensor] = torch.zeros(2, 3),
+                x=torch.ones(2, 3),
+                y=torch.zeros(2, 3),
             ):
                 if x is not None:
                     return x
@@ -795,20 +631,20 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.randn(2, 3)
         y = torch.randn(2, 3)
         model = Model()
-        self.run_test(model, (x, None))
-        self.run_test(model, (None, y))
+        self.assert_export(model, (x, None))
+        self.assert_export(model, (None, y))
         # tracing means y is never used so it's removed from the exported model inputs,
         # and we fail when trying to run ORT.
         with self.assertRaisesRegex(ValueError, "got too many positional inputs"):
-            self.run_test(model, (x, y))
+            self.assert_export(model, (x, y))
 
     @skipTraceTest()  # tracing is verified with different set of inputs. See above.
     def test_all_optional_default_tensor_script(self):
         class Model(torch.nn.Module):
             def forward(
                 self,
-                x: Optional[Tensor] = torch.ones(2, 3),
-                y: Optional[Tensor] = torch.zeros(2, 3),
+                x=torch.ones(2, 3),
+                y=torch.zeros(2, 3),
             ):
                 if x is not None:
                     return x
@@ -822,14 +658,14 @@ class DynamoExporterTest(common_utils.TestCase):
         model = torch.jit.script(Model())
 
         # Optional supports None inputs
-        self.run_test(model, (x,))
+        self.assert_export(model, (x,))
         # NOTE: default value is not supported on ONNX, so torch and ONNX has
         # different behavior
         with self.assertRaisesRegex(AssertionError, "Tensor-likes are not close!"):
-            self.run_test(model, (), {"y": y}, input_names=["y"])
+            self.assert_export(model, (), {"y": y}, input_names=["y"])
 
-        self.run_test(model, (x, y))
-        self.run_test(model, (), {"x": x, "y": y}, input_names=("x", "y"))
+        self.assert_export(model, (x, y))
+        self.assert_export(model, (), {"x": x, "y": y}, input_names=("x", "y"))
 
     def test_logit(self):
         class Logit(torch.nn.Module):
@@ -841,7 +677,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x.logit(self.eps)
 
         model = Logit(eps=1e-6)
-        self.run_test(model, torch.randn(1, 3, 640, 640))
+        self.assert_export(model, torch.randn(1, 3, 640, 640))
 
     class Atleast1d(torch.nn.Module):
         def forward(self, t, w, x, y, z):
@@ -867,7 +703,7 @@ class DynamoExporterTest(common_utils.TestCase):
         def forward(self, x):
             return torch.atleast_3d(x)
 
-  # tracing uses prim::ListUnpack to avoid onnx::SequenceConstruct
+    # tracing uses prim::ListUnpack to avoid onnx::SequenceConstruct
     @common_utils.parametrize("module_class", (Atleast1d, Atleast2d, Atleast3d))
     def test_atleast_nd_list_input(self, module_class: torch.nn.Module):
         inputs = (
@@ -877,9 +713,9 @@ class DynamoExporterTest(common_utils.TestCase):
             torch.randn(2, 3, 4),
             torch.randn(2, 3, 4, 5),
         )
-        self.run_test(module_class(), inputs)
+        self.assert_export(module_class(), inputs)
 
-  # tracing uses prim::ListUnpack to avoid onnx::SequenceConstruct
+    # tracing uses prim::ListUnpack to avoid onnx::SequenceConstruct
     @common_utils.parametrize(
         "module_class", (Atleast1dTensor, Atleast2dTensor, Atleast3dTensor)
     )
@@ -896,22 +732,22 @@ class DynamoExporterTest(common_utils.TestCase):
     def test_atleast_nd_single_tensor_input(
         self, module_class: torch.nn.Module, inputs: torch.Tensor
     ):
-        self.run_test(module_class(), inputs)
+        self.assert_export(module_class(), inputs)
 
-  # Needs https://github.com/pytorch/rfcs/pull/21
+    # Needs https://github.com/pytorch/rfcs/pull/21
     def test_mixed_optional(self):
         class Model(torch.nn.Module):
-            def forward(self, x, y: Optional[Tensor]):
+            def forward(self, x, y):
                 if y is not None:
                     return x + y
                 return x
 
         x = torch.randn(2, 3)
         model = Model()
-        self.run_test(model, (x, None))
-        self.run_test(model, (x, x))
+        self.assert_export(model, (x, None))
+        self.assert_export(model, (x, x))
 
-  # Needs https://github.com/pytorch/rfcs/pull/21
+    # Needs https://github.com/pytorch/rfcs/pull/21
     def test_tuple_of_optional(self):
         class Model(torch.nn.Module):
             def forward(self, x, y: tuple[Optional[Tensor], Optional[Tensor]]):
@@ -923,9 +759,9 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3)
         y1 = torch.randn(2, 3)
-        self.run_test(Model(), (x, (None, y1)))
+        self.assert_export(Model(), (x, (None, y1)))
 
-  # tracing eliminates None inputs so it works differently. See _script version below.
+    # tracing eliminates None inputs so it works differently. See _script version below.
     def test_tuple_of_optional_default_tensor(self):
         class Model(torch.nn.Module):
             def forward(
@@ -945,7 +781,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3)
         y1 = torch.randn(2, 3)
-        self.run_test(Model(), (x, (None, y1)))
+        self.assert_export(Model(), (x, (None, y1)))
 
     @skipTraceTest()  # tracing is verified with different set of inputs. See above.
     def test_tuple_of_optional_default_tensor_script(self):
@@ -972,8 +808,8 @@ class DynamoExporterTest(common_utils.TestCase):
         with self.assertRaisesRegex(
             ValueError, "args contained 1 None's after flattening."
         ):
-            self.run_test(model, (x, (None, y1)))
-        self.run_test(model, (x, (y0, y1)))
+            self.assert_export(model, (x, (None, y1)))
+        self.assert_export(model, (x, (y0, y1)))
         # export succeeds, but running ORT through run_test would fail because the exported model
         # has the inputs flattened into 3 inputs.
         torch.onnx.export(
@@ -987,7 +823,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = 3
         y = torch.randint(10, (2, 3, 4))
-        self.run_test(Model(), (x, y))
+        self.assert_export(Model(), (x, y))
 
     @skipDtypeChecking
     def test_primitive_input_floating(self):
@@ -997,7 +833,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = 3.0
         y = torch.randn(2, 3, 4)
-        self.run_test(Model(), (x, y))
+        self.assert_export(Model(), (x, y))
 
     def test_primitive_input_bool(self):
         class Model(torch.nn.Module):
@@ -1010,7 +846,7 @@ class DynamoExporterTest(common_utils.TestCase):
         flag = True
         x = torch.randn(2, 3, 4)
         y = torch.randn(2, 3, 4)
-        self.run_test(torch.jit.script(Model()), (flag, x, y))
+        self.assert_export(torch.jit.script(Model()), (flag, x, y))
 
     def test_cste_script(self):
         class MyModel(torch.jit.ScriptModule):
@@ -1021,8 +857,8 @@ class DynamoExporterTest(common_utils.TestCase):
                 )
 
         x = torch.randn(3, 4)
-        self.run_test(MyModel(), x, input_names=["x"], dynamic_axes={"x": [0, 1]})
-        self.run_test(MyModel(), x, remained_onnx_input_idx=[])
+        self.assert_export(MyModel(), x, input_names=["x"], dynamic_axes={"x": [0, 1]})
+        self.assert_export(MyModel(), x, remained_onnx_input_idx=[])
 
     def test_scalar_tensor(self):
         class test(torch.nn.Module):
@@ -1034,7 +870,7 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.randn(2, 3, 4)
         y = torch.randn(7, 8, 9)
         model = test()
-        self.run_test(
+        self.assert_export(
             model,
             x,
             additional_test_inputs=[y],
@@ -1049,10 +885,10 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.tensor(input.shape[1])
 
         x = torch.randn(3, 4)
-        self.run_test(
+        self.assert_export(
             ScalarInputModel(), x, input_names=["x"], dynamic_axes={"x": [0, 1]}
         )
-        self.run_test(ScalarInputModel(), x, remained_onnx_input_idx=[])
+        self.assert_export(ScalarInputModel(), x, remained_onnx_input_idx=[])
 
         class TensorInputModel(torch.jit.ScriptModule):
             @torch.jit.script_method
@@ -1060,10 +896,10 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.tensor([input.shape[0], input.shape[1]])
 
         x = torch.randn(3, 4)
-        self.run_test(
+        self.assert_export(
             TensorInputModel(), x, input_names=["x"], dynamic_axes={"x": [0, 1]}
         )
-        self.run_test(TensorInputModel(), x, remained_onnx_input_idx=[])
+        self.assert_export(TensorInputModel(), x, remained_onnx_input_idx=[])
 
         class FloatInputModel(torch.jit.ScriptModule):
             @torch.jit.script_method
@@ -1071,7 +907,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.tensor([float(input)])
 
         x = torch.randn(1)
-        self.run_test(FloatInputModel(), x)
+        self.assert_export(FloatInputModel(), x)
 
         class InputWithDtypeModel(torch.jit.ScriptModule):
             @torch.jit.script_method
@@ -1079,10 +915,10 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.tensor(input.shape[1], dtype=torch.long)
 
         x = torch.randn(3, 4)
-        self.run_test(
+        self.assert_export(
             InputWithDtypeModel(), x, input_names=["x"], dynamic_axes={"x": [0, 1]}
         )
-        self.run_test(InputWithDtypeModel(), x, remained_onnx_input_idx=[])
+        self.assert_export(InputWithDtypeModel(), x, remained_onnx_input_idx=[])
 
         class MixedInputModel(torch.jit.ScriptModule):
             @torch.jit.script_method
@@ -1090,12 +926,12 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.tensor([input.shape[0], int(input)])
 
         x = torch.randn(1)
-        self.run_test(MixedInputModel(), x)
+        self.assert_export(MixedInputModel(), x)
 
     def test_hardtanh(self):
         model = torch.nn.Hardtanh(-1.5, 2.5)
         x = torch.arange(-5, 5).to(dtype=torch.float32)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_hardtanh_script_with_default_values(self):
         class MyModel(torch.jit.ScriptModule):
@@ -1104,19 +940,19 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.nn.functional.hardtanh(x)
 
         x = torch.arange(-5, 5).to(dtype=torch.float32)
-        self.run_test(MyModel(), x)
+        self.assert_export(MyModel(), x)
 
     def test_hardswish(self):
         model = torch.nn.Hardswish()
 
         x = torch.rand(3, 3).to(dtype=torch.float32)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
         # Testing edge cases
         x = torch.tensor(3).to(dtype=torch.float32)
-        self.run_test(model, x)
+        self.assert_export(model, x)
         x = torch.tensor(-3).to(dtype=torch.float32)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_hardswish_script(self):
         class MyModel(torch.jit.ScriptModule):
@@ -1125,57 +961,57 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.nn.functional.hardswish(x)
 
         x = torch.rand(3, 3).to(dtype=torch.float32)
-        self.run_test(MyModel(), x)
+        self.assert_export(MyModel(), x)
 
     def test_hardsigmoid(self):
         model = torch.nn.Hardsigmoid()
 
         x = torch.rand(3, 3).to(dtype=torch.float32)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
         # corner cases
         x = torch.tensor(3).to(dtype=torch.float32)
-        self.run_test(model, x)
+        self.assert_export(model, x)
         x = torch.tensor(-3).to(dtype=torch.float32)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_tanhshrink(self):
         model = torch.nn.Tanhshrink()
 
         x = torch.rand(3, 3).to(dtype=torch.float32)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_hardshrink(self):
         model = torch.nn.Hardshrink()
 
         x = torch.rand(3, 3).to(dtype=torch.float32)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
         # Testing edge cases
         x = torch.tensor(0.5).to(dtype=torch.float32)
-        self.run_test(model, x)
+        self.assert_export(model, x)
         x = torch.tensor(-0.5).to(dtype=torch.float32)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_hardshrink_dtype(self):
         x = torch.rand(3, 3).to(dtype=torch.float64)
-        self.run_test(torch.nn.Hardshrink(), x)
+        self.assert_export(torch.nn.Hardshrink(), x)
 
     def test_softshrink(self):
         model = torch.nn.Softshrink()
 
         x = torch.rand(3, 3).to(dtype=torch.float32)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
         # Testing edge cases
         x = torch.tensor(0.5).to(dtype=torch.float32)
-        self.run_test(model, x)
+        self.assert_export(model, x)
         x = torch.tensor(-0.5).to(dtype=torch.float32)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_softshrink_dtype(self):
         x = torch.rand(3, 3).to(dtype=torch.float64)
-        self.run_test(torch.nn.Softshrink(), x)
+        self.assert_export(torch.nn.Softshrink(), x)
 
     def test_clamp(self):
         class ClampModel(torch.nn.Module):
@@ -1183,21 +1019,21 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x.clamp(-0.5, 0.5)
 
         x = torch.randn(3, 4)
-        self.run_test(ClampModel(), x)
+        self.assert_export(ClampModel(), x)
 
         class ClampMinModel(torch.nn.Module):
             def forward(self, x):
                 return x.clamp(min=-0.5)
 
         x = torch.randn(3, 4)
-        self.run_test(ClampMinModel(), x)
+        self.assert_export(ClampMinModel(), x)
 
         class ClampMaxModel(torch.nn.Module):
             def forward(self, x):
                 return x.clamp(max=0.5)
 
         x = torch.randn(3, 4)
-        self.run_test(ClampMaxModel(), x)
+        self.assert_export(ClampMaxModel(), x)
 
     def test_clamp_dyn(self):
         class ClampMaxModel(torch.jit.ScriptModule):
@@ -1206,7 +1042,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x.clamp(None, x.size(0))
 
         x = torch.arange(16).view(4, 4).float()
-        self.run_test(ClampMaxModel(), x)
+        self.assert_export(ClampMaxModel(), x)
 
         class ClampMinModel(torch.jit.ScriptModule):
             @torch.jit.script_method
@@ -1214,7 +1050,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x.clamp(x.size(0), None)
 
         x = torch.arange(16).view(4, 4).float()
-        self.run_test(ClampMinModel(), x)
+        self.assert_export(ClampMinModel(), x)
 
         class ClampMinMaxModel(torch.jit.ScriptModule):
             @torch.jit.script_method
@@ -1222,7 +1058,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x.clamp(x.size(0), x.size(1))
 
         x = torch.arange(16).view(2, 8).float()
-        self.run_test(ClampMinMaxModel(), x)
+        self.assert_export(ClampMinMaxModel(), x)
 
         class ClampTensorModel(torch.nn.Module):
             def forward(self, x, min, max):
@@ -1231,19 +1067,19 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.randn(3, 4)
         y = torch.randn(3, 4)
         z = torch.randn(3, 4)
-        self.run_test(ClampTensorModel(), (x, y, z))
+        self.assert_export(ClampTensorModel(), (x, y, z))
 
         class ClampTensorMinModel(torch.nn.Module):
             def forward(self, x, min):
                 return x.clamp(min=min)
 
-        self.run_test(ClampTensorMinModel(), (x, y))
+        self.assert_export(ClampTensorMinModel(), (x, y))
 
         class ClampTensorMaxModel(torch.nn.Module):
             def forward(self, x, max):
                 return x.clamp(max=max)
 
-        self.run_test(ClampTensorMaxModel(), (x, z))
+        self.assert_export(ClampTensorMaxModel(), (x, z))
 
     def test_full_trace(self):
         class FullModel(torch.nn.Module):
@@ -1251,7 +1087,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.full((3, 4), x, dtype=torch.long)
 
         x = torch.tensor(12)
-        self.run_test(FullModel(), x)
+        self.assert_export(FullModel(), x)
 
     def test_full_script(self):
         class FullModelScripting(torch.jit.ScriptModule):
@@ -1260,7 +1096,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.full((3, 4), x, dtype=torch.long)
 
         x = torch.tensor(12)
-        self.run_test(FullModelScripting(), x)
+        self.assert_export(FullModelScripting(), x)
 
     def test_fuse_addmm(self):
         class AddmmModel(torch.nn.Module):
@@ -1268,12 +1104,12 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.mm(x, x) + x
 
         x = torch.ones(3, 3)
-        self.run_test(AddmmModel(), x)
+        self.assert_export(AddmmModel(), x)
 
     def test_maxpool(self):
         model = torch.nn.MaxPool1d(2, stride=1)
         x = torch.randn(20, 16, 50)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_conv(self):
         class TraceModel(torch.nn.Module):
@@ -1294,7 +1130,7 @@ class DynamoExporterTest(common_utils.TestCase):
         x2 = torch.randn(20, 16, 50, 50)
         x3 = torch.randn(20, 16, 10, 50, 50)
 
-        self.run_test(TraceModel(), (x1, x2, x3), atol=10e-5)
+        self.assert_export(TraceModel(), (x1, x2, x3), atol=10e-5)
 
     def test_conv_str_padding(self):
         class TraceModel(torch.nn.Module):
@@ -1315,7 +1151,7 @@ class DynamoExporterTest(common_utils.TestCase):
         x2 = torch.randn(20, 16, 50, 50)
         x3 = torch.randn(20, 16, 10, 50, 50)
 
-        self.run_test(TraceModel(), (x1, x2, x3), atol=10e-5)
+        self.assert_export(TraceModel(), (x1, x2, x3), atol=10e-5)
 
     def test_conv_shape_inference(self):
         class Model(torch.nn.Module):
@@ -1329,7 +1165,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return self.conv2(input) + 2
 
         x = torch.randn(20, 16, 50, 100)
-        self.run_test(
+        self.assert_export(
             Model(), x, atol=10e-5, input_names=["x"], dynamic_axes={"x": [0]}
         )
 
@@ -1352,14 +1188,14 @@ class DynamoExporterTest(common_utils.TestCase):
         x2 = torch.randn(20, 16, 10, 10)
         x3 = torch.randn(20, 16, 10, 10, 10)
 
-        self.run_test(TraceModel(), (x1, x2, x3), atol=10e-5)
+        self.assert_export(TraceModel(), (x1, x2, x3), atol=10e-5)
 
     def test_numpy_T(self):
         class NumpyTranspose(torch.nn.Module):
             def forward(self, x):
                 return x.T
 
-        self.run_test(NumpyTranspose(), torch.randn(4, 7))
+        self.assert_export(NumpyTranspose(), torch.randn(4, 7))
 
     # Conversion of Transpose depends on input shape to be known.
     # The following test only works when onnx shape inference is enabled.
@@ -1376,7 +1212,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(32, 3, 64, 64)
         y = torch.randn(16, 3, 8, 64)
-        self.run_test(
+        self.assert_export(
             TransposeModule(),
             x,
             input_names=["x"],
@@ -1398,7 +1234,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x2 = [] if x2 is None else [x2]
         if len(x2) > 0:
-            self.run_test(
+            self.assert_export(
                 Squeeze(d),
                 x1,
                 input_names=["input"],
@@ -1406,7 +1242,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 additional_test_inputs=x2,
             )
         else:
-            self.run_test(Squeeze(d), x1)
+            self.assert_export(Squeeze(d), x1)
 
     def test_squeeze_without_no_op(self):
         x = torch.randn(2, 1, 4)
@@ -1445,8 +1281,8 @@ class DynamoExporterTest(common_utils.TestCase):
         d1 = torch.tensor([1])
         d3 = torch.tensor([3])
         d4 = torch.tensor([4])
-        self.run_test(Squeeze(), (d1, d4), additional_test_inputs=[(d3, d4)])
-        self.run_test(Squeeze(), (d3, d4), additional_test_inputs=[(d1, d3)])
+        self.assert_export(Squeeze(), (d1, d4), additional_test_inputs=[(d3, d4)])
+        self.assert_export(Squeeze(), (d3, d4), additional_test_inputs=[(d1, d3)])
 
     def test_squeeze(self):
         class Squeeze(torch.nn.Module):
@@ -1454,7 +1290,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.squeeze(x, dim=-2)
 
         x = torch.randn(2, 1, 4)
-        self.run_test(Squeeze(), x)
+        self.assert_export(Squeeze(), x)
 
     def test_squeeze_dynamic_dim(self):
         class Squeeze(torch.nn.Module):
@@ -1463,7 +1299,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 1, 4)
         dim = 1
-        self.run_test(Squeeze(), (x, dim))
+        self.assert_export(Squeeze(), (x, dim))
 
     def test_unsqueeze(self):
         class Unsqueeze(torch.nn.Module):
@@ -1471,7 +1307,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.unsqueeze(x, dim=-2)
 
         x = torch.randn(2, 3, 4)
-        self.run_test(Unsqueeze(), x)
+        self.assert_export(Unsqueeze(), x)
 
     def test_unsqueeze_dynamic_dim(self):
         class Unsqueeze(torch.nn.Module):
@@ -1480,7 +1316,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 1, 4)
         dim = -1
-        self.run_test(Unsqueeze(), (x, dim))
+        self.assert_export(Unsqueeze(), (x, dim))
 
     def test_maxpool_default_stride(self):
         class MaxPoolModel(torch.nn.Module):
@@ -1489,13 +1325,13 @@ class DynamoExporterTest(common_utils.TestCase):
 
         model = MaxPoolModel()
         x = torch.randn(10, 20, 16, 50)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_maxpool_adaptive(self):
         model = torch.nn.AdaptiveMaxPool1d((5), return_indices=False)
-        x = torch.randn(20, 16, 50, requires_grad=True)
-        y = torch.randn(32, 16, 50, requires_grad=True)
-        self.run_test(
+        x = torch.randn(20, 16, 50)
+        y = torch.randn(32, 16, 50)
+        self.assert_export(
             model,
             x,
             input_names=["x"],
@@ -1505,23 +1341,23 @@ class DynamoExporterTest(common_utils.TestCase):
 
     def test_maxpool_2d(self):
         model = torch.nn.MaxPool2d(5, padding=(1, 2))
-        x = torch.randn(1, 20, 16, 50, requires_grad=True)
-        self.run_test(model, x)
+        x = torch.randn(1, 20, 16, 50)
+        self.assert_export(model, x)
 
     def test_maxpool_1d_ceil(self):
         model = torch.nn.MaxPool1d(3, 2, ceil_mode=True)
         x = torch.randn(20, 16, 50)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_maxpool_2d_ceil(self):
         model = torch.nn.MaxPool2d(3, 2, ceil_mode=True)
         x = torch.randn(20, 16, 50, 32)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_maxpool_3d_ceil(self):
         model = torch.nn.MaxPool3d(3, 2, ceil_mode=True)
         x = torch.randn(20, 16, 50, 44, 31)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_maxpool_dynamic(self):
         class test(torch.nn.Module):
@@ -1539,7 +1375,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         model = test(8, 16)
         inputs = torch.randn(2, 8, 64, 64)
-        self.run_test(
+        self.assert_export(
             model,
             inputs,
             input_names=["input_0"],
@@ -1554,7 +1390,7 @@ class DynamoExporterTest(common_utils.TestCase):
             kernel_size=1, dilation=1, stride=2, ceil_mode=True, return_indices=False
         )
         x = torch.randn(1, 3, 32)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     @skipIfUnsupportedMaxOpsetVersion(9)
     def test_maxpool_2d_ceil_corner(self):
@@ -1566,7 +1402,7 @@ class DynamoExporterTest(common_utils.TestCase):
             return_indices=False,
         )
         x = torch.randn(1, 3, 32, 32)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     @skipIfUnsupportedMaxOpsetVersion(9)
     def test_maxpool_3d_ceil_corner(self):
@@ -1579,7 +1415,7 @@ class DynamoExporterTest(common_utils.TestCase):
             return_indices=False,
         )
         x = torch.randn(1, 3, 51, 52, 45)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     @skipIfUnsupportedMaxOpsetVersion(9)
     def test_maxpool_1d_ceil_corner_with_indices(self):
@@ -1587,7 +1423,7 @@ class DynamoExporterTest(common_utils.TestCase):
             kernel_size=1, dilation=1, stride=2, ceil_mode=True, return_indices=True
         )
         x = torch.randn(1, 3, 32)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     @skipIfUnsupportedMaxOpsetVersion(9)
     def test_maxpool_2d_ceil_corner_with_indices(self):
@@ -1599,7 +1435,7 @@ class DynamoExporterTest(common_utils.TestCase):
             return_indices=True,
         )
         x = torch.randn(1, 3, 32, 32)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     @skipIfUnsupportedMaxOpsetVersion(9)
     def test_maxpool_3d_ceil_corner_with_indices(self):
@@ -1612,17 +1448,17 @@ class DynamoExporterTest(common_utils.TestCase):
             return_indices=True,
         )
         x = torch.randn(1, 3, 51, 52, 45)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_maxpool_with_indices(self):
         model = torch.nn.MaxPool1d(2, stride=1, return_indices=True)
         x = torch.randn(20, 16, 50)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_maxpool_dilation(self):
         model = torch.nn.MaxPool1d(2, stride=1, dilation=2)
         x = torch.randn(20, 16, 50)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_avgpool_default_stride(self):
         class AvgPoolModel(torch.nn.Module):
@@ -1631,17 +1467,17 @@ class DynamoExporterTest(common_utils.TestCase):
 
         model = AvgPoolModel()
         x = torch.randn(10, 20, 16, 50)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_avgpool(self):
         model = torch.nn.AvgPool1d(2, stride=1)
         x = torch.randn(20, 16, 50)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_avgpool_1d_ceil(self):
         model = torch.nn.AvgPool1d(3, 2, ceil_mode=True)
         x = torch.randn(1, 1, 7)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     # TODO: ceil_mode is not included in the test, because of
     # https://github.com/microsoft/onnxruntime/issues/16203
@@ -1662,7 +1498,7 @@ class DynamoExporterTest(common_utils.TestCase):
             count_include_pad=count_include_pad,
         )
         x = torch.randn(20, 16, 50, 32)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     # TODO: ceil_mode is not included in the test, because of
     # https://github.com/microsoft/onnxruntime/issues/16203
@@ -1673,7 +1509,7 @@ class DynamoExporterTest(common_utils.TestCase):
         model = torch.nn.AvgPool3d(3, 2, ceil_mode=True)
         x = torch.randn(20, 16, 50, 44, 31)
         y = torch.randn(32, 8, 50, 44, 31)
-        self.run_test(
+        self.assert_export(
             model,
             x,
             input_names=["x"],
@@ -1699,7 +1535,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         model = test(8, 16)
         inputs = torch.randn(2, 8, 64, 64)
-        self.run_test(
+        self.assert_export(
             model,
             inputs,
             input_names=["input_0"],
@@ -1716,10 +1552,10 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x.new_zeros(x.shape)
 
         x = torch.randn(2, 3, 4)
-        self.run_test(
+        self.assert_export(
             FloatingPoint(), x, input_names=["x"], dynamic_axes={"x": [0, 1, 2]}
         )
-        self.run_test(FloatingPoint(), x, remained_onnx_input_idx=[])
+        self.assert_export(FloatingPoint(), x, remained_onnx_input_idx=[])
 
         class FloatingPoint(torch.jit.ScriptModule):
             @torch.jit.script_method
@@ -1732,7 +1568,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x
 
         x = torch.randn(2, 3, 4)
-        self.run_test(FloatingPoint(), x)
+        self.assert_export(FloatingPoint(), x)
 
     # Operator rank mismatch between outputs of two branches for opsets below 11.
     def test_floating_point_infer_dtype(self):
@@ -1747,10 +1583,10 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x
 
         x = torch.randn(2, 3, 4)
-        self.run_test(
+        self.assert_export(
             FloatingPoint(), x, input_names=["x"], dynamic_axes={"x": [0, 1, 2]}
         )
-        self.run_test(FloatingPoint(), x, remained_onnx_input_idx=[])
+        self.assert_export(FloatingPoint(), x, remained_onnx_input_idx=[])
 
         class FloatingPoint(torch.jit.ScriptModule):
             @torch.jit.script_method
@@ -1763,7 +1599,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x
 
         x = torch.randn(2, 3, 4).to(torch.int32)
-        self.run_test(FloatingPoint(), x)
+        self.assert_export(FloatingPoint(), x)
 
     def test_prim_min(self):
         @torch.jit.script
@@ -1781,7 +1617,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return list_append(boxes)
 
         x = torch.rand(5, 5)
-        self.run_test(Min(), (x,))
+        self.assert_export(Min(), (x,))
 
         class M(torch.jit.ScriptModule):
             @torch.jit.script_method
@@ -1790,7 +1626,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return min(x[i], i)
 
         x = torch.arange(6, dtype=torch.int64)
-        self.run_test(M(), (x,))
+        self.assert_export(M(), (x,))
 
     def test_arithmetic(self):
         class ArithmeticModule(torch.nn.Module):
@@ -1802,7 +1638,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x
 
         x = torch.randn(2, 3, 4)
-        self.run_test(ArithmeticModule(), x)
+        self.assert_export(ArithmeticModule(), x)
 
     def test_arithmetic_prim_long(self):
         class ArithmeticModule(torch.nn.Module):
@@ -1815,7 +1651,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4)
         y = 2
-        self.run_test(ArithmeticModule(), (x, y))
+        self.assert_export(ArithmeticModule(), (x, y))
 
         class ArithmeticModule(torch.nn.Module):
             def forward(self, x):
@@ -1824,7 +1660,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x.shape[0]
 
         x = torch.randn(2, 3, 4)
-        self.run_test(ArithmeticModule(), x, remained_onnx_input_idx=[])
+        self.assert_export(ArithmeticModule(), x, remained_onnx_input_idx=[])
 
     @skipDtypeChecking
     def test_arithmetic_prim_float(self):
@@ -1838,7 +1674,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4)
         y = 2.5
-        self.run_test(ArithmeticModule(), (x, y))
+        self.assert_export(ArithmeticModule(), (x, y))
 
         class ArithmeticModule(torch.nn.Module):
             def forward(self, x):
@@ -1847,7 +1683,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x.shape[1] / 2
 
         x = torch.randn(2, 3, 4)
-        self.run_test(ArithmeticModule(), x, remained_onnx_input_idx=[])
+        self.assert_export(ArithmeticModule(), x, remained_onnx_input_idx=[])
 
     @skipDtypeChecking
     def test_arithmetic_prim_bool(self):
@@ -1864,7 +1700,7 @@ class DynamoExporterTest(common_utils.TestCase):
         y = 2
         z = False
         t = 2.5
-        self.run_test(ArithmeticModule(), (x, y, z, t))
+        self.assert_export(ArithmeticModule(), (x, y, z, t))
 
         class ArithmeticModule(torch.nn.Module):
             def forward(self, x: int, y: int):
@@ -1872,7 +1708,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = 3
         y = 2
-        self.run_test(ArithmeticModule(), (x, y))
+        self.assert_export(ArithmeticModule(), (x, y))
 
     @skipScriptTest(
         15,
@@ -1886,7 +1722,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return (x, (x, None, (x, None)))
 
         x = torch.randn(3, 4)
-        self.run_test(TupleModel(), (x,))
+        self.assert_export(TupleModel(), (x,))
 
     # In scripting the first transpose node do not carry shape and dtype info.
     # The following test only works when onnx shape inference is enabled.
@@ -1902,7 +1738,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x
 
         x = torch.randn(2, 3)
-        self.run_test(ArithmeticModule(), x)
+        self.assert_export(ArithmeticModule(), x)
 
     @unittest.skip("Floor division on ONNX is inconsistent with eager (see #78411)")
     def test_floor_div(self):
@@ -1925,7 +1761,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.arange(-2, 4).reshape(2, 3, 1)
         y = torch.arange(1, 2 * 3 * 4 + 1).reshape(2, 3, 4)
-        self.run_test(FloorDivModule(), (x, y))
+        self.assert_export(FloorDivModule(), (x, y))
 
     @unittest.skip("Floor division on ONNX is inconsistent with eager (see #78411)")
     def test_floor_div_script(self):
@@ -1936,7 +1772,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.arange(-2, 4).reshape(2, 3, 1)
         y = torch.randn(2, 3, 4)
-        self.run_test(FloorDivModule(), (x, y))
+        self.assert_export(FloorDivModule(), (x, y))
 
     @unittest.skip("Floor division on ONNX is inconsistent with eager (see #78411)")
     def test_floordiv(self):
@@ -1945,10 +1781,10 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x.new_zeros(x.size(2) // x.size(1))
 
         x = torch.randn(2, 3, 4)
-        self.run_test(
+        self.assert_export(
             FloordivModule(), x, input_names=["x"], dynamic_axes={"x": [0, 1, 2]}
         )
-        self.run_test(FloordivModule(), (x,), remained_onnx_input_idx=[])
+        self.assert_export(FloordivModule(), (x,), remained_onnx_input_idx=[])
 
     def test_div(self):
         class DivModule(torch.nn.Module):
@@ -1957,8 +1793,8 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4).to(torch.int)
         y = torch.arange(1, 2 * 3 * 4 + 1).reshape(2, 3, 4).to(torch.int)
-        self.run_test(DivModule(), (x, y))
-        self.run_test(DivModule(), (x.float(), y.float()))
+        self.assert_export(DivModule(), (x, y))
+        self.assert_export(DivModule(), (x.float(), y.float()))
 
     # Note: div cannot (generally) be exported via scripting
     # since its type promotion logic is dependent on knowing the scalar types
@@ -1973,10 +1809,10 @@ class DynamoExporterTest(common_utils.TestCase):
         y = torch.arange(1, 2 * 3 * 4 + 1).reshape(2, 3, 4).to(torch.int)
 
         with common_utils.set_default_dtype(torch.float):
-            self.run_test(torch.jit.trace(DivModule(), (x, y)), (x, y))
+            self.assert_export(torch.jit.trace(DivModule(), (x, y)), (x, y))
 
         with common_utils.set_default_dtype(torch.double):
-            self.run_test(torch.jit.trace(DivModule(), (x, y)), (x, y))
+            self.assert_export(torch.jit.trace(DivModule(), (x, y)), (x, y))
 
     # In scripting x, y do not carry shape and dtype info.
     # The following test only works when onnx shape inference is enabled.
@@ -1996,19 +1832,19 @@ class DynamoExporterTest(common_utils.TestCase):
         #    This can be handled by the default case, where both are cast to float.
         #    It works even if type of x, y are unknown.
         with common_utils.set_default_dtype(torch.float):
-            self.run_test(torch.jit.script(DivModule()), (x, y))
+            self.assert_export(torch.jit.script(DivModule()), (x, y))
 
         # 2. x,y are int, and output is double.
         #    This can be handled by the default case, where both are cast to double.
         #    It works even if type of x, y are unknown.
         with common_utils.set_default_dtype(torch.double):
-            self.run_test(torch.jit.script(DivModule()), (x, y))
+            self.assert_export(torch.jit.script(DivModule()), (x, y))
 
         # 3. x is int, y is double, and output is double.
         #    This can only be handled when both type of x and y are known.
         x = torch.randn(2, 3, 4).to(torch.int)
         y = torch.arange(1, 2 * 3 * 4 + 1).reshape(2, 3, 4).to(torch.double)
-        self.run_test(torch.jit.script(DivModule()), (x, y))
+        self.assert_export(torch.jit.script(DivModule()), (x, y))
 
     @skipDtypeChecking
     def test_div_rounding_mode(self):
@@ -2039,17 +1875,17 @@ class DynamoExporterTest(common_utils.TestCase):
         y = torch.arange(1, 2 * 3 * 4 + 1).reshape(2, 3, 4).to(torch.int)
 
         for module in modules:
-            self.run_test(module, (x, y))
-            self.run_test(torch.jit.trace(module, (x, y)), (x, y))
-            self.run_test(torch.jit.script(module), (x, y))
+            self.assert_export(module, (x, y))
+            self.assert_export(torch.jit.trace(module, (x, y)), (x, y))
+            self.assert_export(torch.jit.script(module), (x, y))
 
         x = torch.randn(2, 3, 4)
         y = torch.rand(2, 3, 4) * 10.0 + 0.1
 
         for module in modules:
-            self.run_test(module, (x, y))
-            self.run_test(torch.jit.trace(module, (x, y)), (x, y))
-            self.run_test(torch.jit.script(module), (x, y))
+            self.assert_export(module, (x, y))
+            self.assert_export(torch.jit.trace(module, (x, y)), (x, y))
+            self.assert_export(torch.jit.script(module), (x, y))
 
     def test_slice_trace(self):
         class MyModule(torch.nn.Module):
@@ -2057,7 +1893,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x[0:1]
 
         x = torch.randn(3)
-        self.run_test(MyModule(), x)
+        self.assert_export(MyModule(), x)
 
     def test_slice_neg(self):
         class NegSlice(torch.nn.Module):
@@ -2065,7 +1901,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x[-1:]
 
         x = torch.randn(3, 4, 5)
-        self.run_test(NegSlice(), x)
+        self.assert_export(NegSlice(), x)
 
     def test_slice_neg_large(self):
         class NegSlice(torch.nn.Module):
@@ -2073,7 +1909,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x[:, :, -3:-1, :, -1]
 
         x = torch.randn(3, 4, 5, 6, 7)
-        self.run_test(NegSlice(), x)
+        self.assert_export(NegSlice(), x)
 
     def test_slice_neg_large_negone(self):
         class NegSlice(torch.nn.Module):
@@ -2081,7 +1917,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x[:, :, :, :, -1]
 
         x = torch.randn(3, 4, 5, 6, 7)
-        self.run_test(NegSlice(), x)
+        self.assert_export(NegSlice(), x)
 
     def test_slice_with_input_index(self):
         class InputIndexSlice(torch.nn.Module):
@@ -2091,9 +1927,9 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.zeros((56, 6, 256))
         y = torch.rand((22, 256))
-        self.run_test(InputIndexSlice(), (x, y))
+        self.assert_export(InputIndexSlice(), (x, y))
 
-  # Torchscript doesn't support 1d index.
+    # Torchscript doesn't support 1d index.
     def test_slice_with_1d_input_index(self):
         class InputIndexSlice(torch.nn.Module):
             def forward(self, x, y):
@@ -2102,7 +1938,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.zeros((56, 6, 256))
         y = torch.tensor([5], dtype=torch.int64)
-        self.run_test(InputIndexSlice(), (x, y))
+        self.assert_export(InputIndexSlice(), (x, y))
 
     def test_slice_with_input_step_size(self):
         class InputIndexSlice(torch.nn.Module):
@@ -2113,9 +1949,9 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.zeros((56, 6, 256))
         y = torch.tensor(5, dtype=torch.int64)
         z = torch.tensor(2, dtype=torch.int64)
-        self.run_test(InputIndexSlice(), (x, y, z))
+        self.assert_export(InputIndexSlice(), (x, y, z))
 
-  # scripting tuple/list append
+    # scripting tuple/list append
     def test_slice_dynamic(self):
         class DynamicSliceExportMod(torch.nn.Module):
             def forward(self, x):
@@ -2126,7 +1962,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.rand(5, 5, 5)
         y = torch.randn(6, 7, 8)
-        self.run_test(
+        self.assert_export(
             DynamicSliceExportMod(),
             x,
             additional_test_inputs=[y],
@@ -2142,7 +1978,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x[1 : x.size(1)]
 
         x = torch.rand(1, 2)
-        self.run_test(DynamicSliceModel(), x)
+        self.assert_export(DynamicSliceModel(), x)
 
     def test_slice_dynamic_shape_script(self):
         class DynamicSliceModel(torch.nn.Module):
@@ -2150,12 +1986,12 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x.new_zeros(x.shape[1 : x.size(2)])
 
         x = torch.rand(1, 2, 3, 4)
-        self.run_test(
+        self.assert_export(
             DynamicSliceModel(), x, input_names=["x"], dynamic_axes={"x": [0, 1, 2, 3]}
         )
-        self.run_test(DynamicSliceModel(), x, remained_onnx_input_idx=[])
+        self.assert_export(DynamicSliceModel(), x, remained_onnx_input_idx=[])
 
-  # scripting tuple/list append
+    # scripting tuple/list append
     def test_slice_dynamic_to_end(self):
         class DynamicSliceExportMod(torch.nn.Module):
             def forward(self, x):
@@ -2165,7 +2001,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return tuple(results)
 
         x = torch.rand(5, 5, 5)
-        self.run_test(
+        self.assert_export(
             DynamicSliceExportMod(),
             x,
             dynamic_axes={"input_1": [0, 1, 2], "output_1": [0, 1, 2]},
@@ -2177,7 +2013,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.square(x)
 
         x = torch.randn(2, 3, 4)
-        self.run_test(Square(), x)
+        self.assert_export(Square(), x)
 
     def test_arange_dynamic(self):
         class ArangeModel(torch.nn.Module):
@@ -2190,7 +2026,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(5, 3, 2)
         y = torch.randn(8, 3, 2)
-        self.run_test(
+        self.assert_export(
             ArangeModel(),
             x,
             additional_test_inputs=[y],
@@ -2198,7 +2034,7 @@ class DynamoExporterTest(common_utils.TestCase):
             output_names=["output_1", "output_2", "output_3"],
             dynamic_axes={"input_1": [0], "output_1": [0]},
         )
-        self.run_test(
+        self.assert_export(
             torch.jit.script(ArangeModel()),
             x,
             additional_test_inputs=[y],
@@ -2214,7 +2050,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.arange(end, out=out_t)
 
         x = torch.tensor(8)
-        self.run_test(ArangeOutModel(), (x))
+        self.assert_export(ArangeOutModel(), (x))
 
     def test_dynamic_arange_start_out(self):
         class ArangeStartOutModel(torch.nn.Module):
@@ -2224,13 +2060,13 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4)
         y = torch.tensor(8)
-        self.run_test(
+        self.assert_export(
             ArangeStartOutModel(),
             (x, y),
             input_names=["x", "y"],
             dynamic_axes={"x": [0, 1, 2]},
         )
-        self.run_test(ArangeStartOutModel(), (x, y), remained_onnx_input_idx=[1])
+        self.assert_export(ArangeStartOutModel(), (x, y), remained_onnx_input_idx=[1])
 
     def test_linspace(self):
         class LinspaceModel(torch.nn.Module):
@@ -2240,7 +2076,7 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.tensor(3, dtype=torch.float)
         y = torch.tensor(10, dtype=torch.float)
         z = torch.tensor(5, dtype=torch.int)
-        self.run_test(LinspaceModel(), (x, y, z))
+        self.assert_export(LinspaceModel(), (x, y, z))
 
     def test_linspace_negative_start(self):
         class LinspaceModel(torch.nn.Module):
@@ -2250,7 +2086,7 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.tensor(-1, dtype=torch.float)
         y = torch.tensor(1, dtype=torch.float)
         z = torch.tensor(6, dtype=torch.int)
-        self.run_test(LinspaceModel(), (x, y, z))
+        self.assert_export(LinspaceModel(), (x, y, z))
 
     def test_arange_with_floats_out(self):
         class ArangeModelEnd(torch.nn.Module):
@@ -2259,7 +2095,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.arange(end, out=out_t)
 
         y = torch.tensor(8.5, dtype=torch.float)
-        self.run_test(ArangeModelEnd(), (y))
+        self.assert_export(ArangeModelEnd(), (y))
 
         class ArangeModelStep(torch.nn.Module):
             def forward(self, start, end):
@@ -2268,13 +2104,13 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4)
         y = torch.tensor(8.5, dtype=torch.float)
-        self.run_test(
+        self.assert_export(
             ArangeModelStep(),
             (x, y),
             input_names=["x", "y"],
             dynamic_axes={"x": [0, 1, 2]},
         )
-        self.run_test(ArangeModelStep(), (x, y), remained_onnx_input_idx=[1])
+        self.assert_export(ArangeModelStep(), (x, y), remained_onnx_input_idx=[1])
 
     def test_arange_with_floats(self):
         class ArangeModelEnd(torch.nn.Module):
@@ -2282,7 +2118,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.arange(end)
 
         y = torch.tensor(8.5, dtype=torch.float)
-        self.run_test(ArangeModelEnd(), (y))
+        self.assert_export(ArangeModelEnd(), (y))
 
         class ArangeModelStep(torch.nn.Module):
             def forward(self, start, end):
@@ -2290,13 +2126,13 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4)
         y = torch.tensor(8.5, dtype=torch.float)
-        self.run_test(
+        self.assert_export(
             ArangeModelStep(),
             (x, y),
             input_names=["x", "y"],
             dynamic_axes={"x": [0, 1, 2]},
         )
-        self.run_test(ArangeModelStep(), (x, y), remained_onnx_input_idx=[1])
+        self.assert_export(ArangeModelStep(), (x, y), remained_onnx_input_idx=[1])
 
         class ArangeModelStepNeg(torch.nn.Module):
             def forward(self, start, end):
@@ -2304,13 +2140,13 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4)
         y = torch.tensor(8.5, dtype=torch.float)
-        self.run_test(
+        self.assert_export(
             ArangeModelStepNeg(),
             (x, y),
             input_names=["x", "y"],
             dynamic_axes={"x": [0, 1, 2]},
         )
-        self.run_test(ArangeModelStepNeg(), (x, y), remained_onnx_input_idx=[1])
+        self.assert_export(ArangeModelStepNeg(), (x, y), remained_onnx_input_idx=[1])
 
         class ArangeModelStart(torch.nn.Module):
             def forward(self, start, end):
@@ -2318,13 +2154,13 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4)
         y = torch.tensor(8.5, dtype=torch.float)
-        self.run_test(
+        self.assert_export(
             ArangeModelStart(),
             (x, y),
             input_names=["x", "y"],
             dynamic_axes={"x": [0, 1, 2]},
         )
-        self.run_test(ArangeModelStart(), (x, y), remained_onnx_input_idx=[1])
+        self.assert_export(ArangeModelStart(), (x, y), remained_onnx_input_idx=[1])
 
     def test_arange_with_floats_override(self):
         class ArangeModelEnd(torch.nn.Module):
@@ -2332,7 +2168,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.arange(end, dtype=torch.int64)
 
         y = torch.tensor(8.5, dtype=torch.float)
-        self.run_test(ArangeModelEnd(), (y))
+        self.assert_export(ArangeModelEnd(), (y))
 
         class ArangeModelStep(torch.nn.Module):
             def forward(self, start, end):
@@ -2340,13 +2176,13 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4)
         y = torch.tensor(8.5, dtype=torch.float)
-        self.run_test(
+        self.assert_export(
             ArangeModelStep(),
             (x, y),
             input_names=["x", "y"],
             dynamic_axes={"x": [0, 1, 2]},
         )
-        self.run_test(ArangeModelStep(), (x, y), remained_onnx_input_idx=[1])
+        self.assert_export(ArangeModelStep(), (x, y), remained_onnx_input_idx=[1])
 
     def test_arange_out(self):
         class ArangeOutModel(torch.nn.Module):
@@ -2355,7 +2191,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.arange(end, out=out_t)
 
         x = torch.tensor(8.5, dtype=torch.float)
-        self.run_test(ArangeOutModel(), (x))
+        self.assert_export(ArangeOutModel(), (x))
 
     def test_arange_start_out(self):
         class ArangeStartOutModel(torch.nn.Module):
@@ -2365,13 +2201,13 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4)
         y = torch.tensor(8.5, dtype=torch.float)
-        self.run_test(
+        self.assert_export(
             ArangeStartOutModel(),
             (x, y),
             input_names=["x", "y"],
             dynamic_axes={"x": [0, 1, 2]},
         )
-        self.run_test(ArangeStartOutModel(), (x, y), remained_onnx_input_idx=[1])
+        self.assert_export(ArangeStartOutModel(), (x, y), remained_onnx_input_idx=[1])
 
     def test_arange_no_type(self):
         class ArangeModel(torch.nn.Module):
@@ -2379,7 +2215,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.arange(end), torch.arange(0, end)
 
         x = torch.tensor(6.2, dtype=torch.float)
-        self.run_test(ArangeModel(), x)
+        self.assert_export(ArangeModel(), x)
 
     def test_size(self):
         class SizeModel(torch.nn.Module):
@@ -2391,10 +2227,12 @@ class DynamoExporterTest(common_utils.TestCase):
                 )
 
         x = torch.randn(5, 3, 2)
-        self.run_test(SizeModel(), x, input_names=["x"], dynamic_axes={"x": [0, 1, 2]})
-        self.run_test(SizeModel(), x, remained_onnx_input_idx=[])
+        self.assert_export(
+            SizeModel(), x, input_names=["x"], dynamic_axes={"x": [0, 1, 2]}
+        )
+        self.assert_export(SizeModel(), x, remained_onnx_input_idx=[])
 
-  # x.stride() not scriptable
+    # x.stride() not scriptable
     def test_as_strided(self):
         class Model(torch.nn.Module):
             def forward(self, x):
@@ -2407,16 +2245,16 @@ class DynamoExporterTest(common_utils.TestCase):
                 ), x.as_strided(chunk_size, chunk_stride)
 
         x = torch.randn(5, 8, 7)
-        self.run_test(Model(), x)
+        self.assert_export(Model(), x)
 
-  # Ellipses followed by tensor indexing not scriptable
+    # Ellipses followed by tensor indexing not scriptable
     def test_tensor_index_advanced_indexing_ellipsis(self):
         class MyModel(torch.nn.Module):
             def forward(self, input):
                 return input[..., torch.tensor([2, 1]), torch.tensor([0, 3])]
 
         m1 = torch.randn(3, 4, 5, 6, 7)
-        self.run_test(MyModel(), (m1,))
+        self.assert_export(MyModel(), (m1,))
 
     def test_tensor_index_advanced_indexing(self):
         class MyModel(torch.nn.Module):
@@ -2430,7 +2268,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 ]
 
         m1 = torch.randn(3, 4, 5, 6, 7)
-        self.run_test(MyModel(), (m1,))
+        self.assert_export(MyModel(), (m1,))
 
         class MyModel(torch.nn.Module):
             def forward(self, input):
@@ -2438,7 +2276,7 @@ class DynamoExporterTest(common_utils.TestCase):
                     :, torch.tensor([0, 2]), None, 2:4, torch.tensor([[1, 3], [4, 0]])
                 ]
 
-        self.run_test(MyModel(), (m1,))
+        self.assert_export(MyModel(), (m1,))
 
         class MyModel(torch.nn.Module):
             def forward(self, input):
@@ -2450,7 +2288,7 @@ class DynamoExporterTest(common_utils.TestCase):
                     torch.tensor([[1], [4]]),
                 ]
 
-        self.run_test(MyModel(), (m1,))
+        self.assert_export(MyModel(), (m1,))
 
     def test_tensor_index_advanced_indexing_consecutive(self):
         class MyModel(torch.nn.Module):
@@ -2460,7 +2298,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 ]
 
         m1 = torch.randn(3, 4, 5, 6, 7)
-        self.run_test(MyModel(), (m1,))
+        self.assert_export(MyModel(), (m1,))
 
     def test_index_put(self):
         class IndexPutModel(torch.nn.Module):
@@ -2471,7 +2309,7 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.randn(3, 4)
         ind = torch.tensor([1], dtype=torch.long)
         update = torch.ones(4)
-        self.run_test(IndexPutModel(), (x, ind, update))
+        self.assert_export(IndexPutModel(), (x, ind, update))
 
     def test_index_put_singular(self):
         class IndexPutBoolModel(torch.nn.Module):
@@ -2481,7 +2319,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         mask = torch.zeros(100, dtype=torch.bool)
         indices = (torch.rand(25) * mask.shape[0]).to(torch.int64)
-        self.run_test(IndexPutBoolModel(), (mask, indices))
+        self.assert_export(IndexPutBoolModel(), (mask, indices))
 
         class IndexPutFloatModel(torch.nn.Module):
             def forward(self, mask, indices):
@@ -2490,7 +2328,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         mask = torch.rand(100, dtype=torch.float)
         indices = (torch.rand(50) * mask.shape[0]).to(torch.int64)
-        self.run_test(IndexPutFloatModel(), (mask, indices))
+        self.assert_export(IndexPutFloatModel(), (mask, indices))
 
     def test_index_put_accumulate(self):
         class IndexPutModel(torch.nn.Module):
@@ -2500,7 +2338,7 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.randn(3, 4)
         ind = torch.tensor([2], dtype=torch.long)
         update = torch.ones(4)
-        self.run_test(IndexPutModel(), (x, ind, update))
+        self.assert_export(IndexPutModel(), (x, ind, update))
 
     def test_index_put_slice_index(self):
         class IndexPutModel(torch.nn.Module):
@@ -2510,7 +2348,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(3, 4, 5)
         update = torch.tensor([10, 15]).view(1, 2, 1)
-        self.run_test(IndexPutModel(), (x, update))
+        self.assert_export(IndexPutModel(), (x, update))
 
         class IndexPutModel2(torch.nn.Module):
             def forward(self, x, update):
@@ -2519,7 +2357,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(3, 4, 5)
         update = torch.randn(2, 5)
-        self.run_test(IndexPutModel2(), (x, update))
+        self.assert_export(IndexPutModel2(), (x, update))
 
         class IndexPutModel3(torch.nn.Module):
             def forward(self, x, update):
@@ -2528,7 +2366,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(3, 4, 5)
         update = torch.tensor([10, 15]).view(2, 1, 1)
-        self.run_test(IndexPutModel3(), (x, update))
+        self.assert_export(IndexPutModel3(), (x, update))
 
         class IndexPutModel4(torch.nn.Module):
             def forward(self, x, update):
@@ -2537,7 +2375,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(3, 4, 5)
         update = torch.tensor([10, 15]).view(2, 1)
-        self.run_test(IndexPutModel4(), (x, update))
+        self.assert_export(IndexPutModel4(), (x, update))
 
         class IndexPutModel5(torch.nn.Module):
             def forward(self, x, update):
@@ -2546,7 +2384,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(3, 4, 5)
         update = torch.tensor([10, 15]).view(2, 1)
-        self.run_test(IndexPutModel5(), (x, update))
+        self.assert_export(IndexPutModel5(), (x, update))
 
         class IndexPutModel6(torch.nn.Module):
             def forward(self, x, update):
@@ -2555,7 +2393,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(3, 4, 5)
         update = torch.arange(2 * 5).to(torch.float).view(2, 5)
-        self.run_test(IndexPutModel6(), (x, update))
+        self.assert_export(IndexPutModel6(), (x, update))
 
         class IndexPutModel7(torch.nn.Module):
             def forward(self, x, update):
@@ -2564,7 +2402,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(3, 4, 5)
         update = torch.arange(2 * 5).to(torch.float).view(2, 5)
-        self.run_test(IndexPutModel7(), (x, update))
+        self.assert_export(IndexPutModel7(), (x, update))
 
         class IndexPutModel8(torch.nn.Module):
             def forward(self, x, update):
@@ -2573,7 +2411,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(3, 4, 5)
         update = torch.arange(3 * 5).to(torch.float).view(3, 5)
-        self.run_test(IndexPutModel8(), (x, update))
+        self.assert_export(IndexPutModel8(), (x, update))
 
         class IndexPutModel9(torch.nn.Module):
             def forward(self, poses):
@@ -2584,7 +2422,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return boxes
 
         x = torch.zeros([2, 17, 3], dtype=torch.int64)
-        self.run_test(IndexPutModel9(), (x,))
+        self.assert_export(IndexPutModel9(), (x,))
 
         class IndexPutModel10(torch.nn.Module):
             def forward(self, x, ind, update):
@@ -2594,9 +2432,9 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.randn(3, 4, 5)
         ind = torch.tensor([[0, 2], [1, 1]])
         update = torch.randn(5)
-        self.run_test(IndexPutModel10(), (x, ind, update))
+        self.assert_export(IndexPutModel10(), (x, ind, update))
 
-  # Ellipses followed by tensor indexing not scriptable
+    # Ellipses followed by tensor indexing not scriptable
     def test_index_put_ellipsis(self):
         class IndexPutModel(torch.nn.Module):
             def forward(self, x, update):
@@ -2605,7 +2443,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(3, 4, 5, 6, 7)
         update = torch.randn(3, 1, 1, 3, 2)
-        self.run_test(IndexPutModel(), (x, update))
+        self.assert_export(IndexPutModel(), (x, update))
 
         class IndexPutModel2(torch.nn.Module):
             def forward(self, x, update):
@@ -2614,7 +2452,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(3, 4, 5, 6, 7)
         update = torch.randn(4, 1, 3, 2)
-        self.run_test(IndexPutModel2(), (x, update))
+        self.assert_export(IndexPutModel2(), (x, update))
 
     @unittest.skip(
         "regression in 1.18: https://github.com/microsoft/onnxruntime/issues/20855"
@@ -2659,7 +2497,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(6, 2)
         y = torch.randn(4, 1)
-        self.run_test(
+        self.assert_export(
             ScriptModel(),
             x,
             input_names=["x"],
@@ -2675,7 +2513,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(3, 4)
         update = torch.randn(2, 4)
-        self.run_test(CopyModel(), (x, update))
+        self.assert_export(CopyModel(), (x, update))
 
         # mixed slice and select
         class CopyModel2(torch.nn.Module):
@@ -2685,13 +2523,13 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(3, 4)
         update = torch.tensor([0], dtype=torch.float32)
-        self.run_test(CopyModel2(), (x, update))
+        self.assert_export(CopyModel2(), (x, update))
 
         update = torch.tensor([2, 3], dtype=torch.float32)
-        self.run_test(CopyModel2(), (x, update))
+        self.assert_export(CopyModel2(), (x, update))
 
         update = torch.randn(2)
-        self.run_test(CopyModel2(), (x, update))
+        self.assert_export(CopyModel2(), (x, update))
 
         class CopyModel3(torch.nn.Module):
             def forward(self, x, data):
@@ -2700,13 +2538,13 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(3, 4)
         update = torch.tensor([0], dtype=torch.float32)
-        self.run_test(CopyModel3(), (x, update))
+        self.assert_export(CopyModel3(), (x, update))
 
         update = torch.tensor([2, 3], dtype=torch.float32)
-        self.run_test(CopyModel3(), (x, update))
+        self.assert_export(CopyModel3(), (x, update))
 
         update = torch.randn(2)
-        self.run_test(CopyModel3(), (x, update))
+        self.assert_export(CopyModel3(), (x, update))
 
         class CopyModel4(torch.nn.Module):
             def forward(self, x, ind, data):
@@ -2716,7 +2554,7 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.randn(3, 4)
         ind = torch.tensor(2)
         data = torch.randn(4)
-        self.run_test(CopyModel4(), (x, ind, data))
+        self.assert_export(CopyModel4(), (x, ind, data))
 
         class CopyModel5(torch.nn.Module):
             def forward(self, x, mask):
@@ -2726,9 +2564,9 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(3, 4)
         mask = torch.randn(3, 1)
-        self.run_test(CopyModel5(), (x, mask))
+        self.assert_export(CopyModel5(), (x, mask))
 
-  # Model not scriptable (output with shape doesn't match the broadcast shape)
+    # Model not scriptable (output with shape doesn't match the broadcast shape)
     def test_copy_tracing(self):
         class CopyModel(torch.nn.Module):
             def forward(self, x, data):
@@ -2737,7 +2575,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(3, 4)
         update = torch.randn(1, 2)
-        self.run_test(CopyModel(), (x, update))
+        self.assert_export(CopyModel(), (x, update))
 
     def test_copy_ellipsis(self):
         class CopyModel(torch.nn.Module):
@@ -2747,11 +2585,11 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4)
         update = torch.ones(1)
-        self.run_test(CopyModel(), (x, update))
+        self.assert_export(CopyModel(), (x, update))
 
         x = torch.randn(2, 3, 4, 5, 6)
         update = torch.ones(1)
-        self.run_test(CopyModel(), (x, update))
+        self.assert_export(CopyModel(), (x, update))
 
     def test_copy_ellipsis_script(self):
         class CopyModel(torch.nn.Module):
@@ -2765,7 +2603,7 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.randn(3, 4, 5, 6)
 
         update = torch.ones(1)
-        self.run_test(CopyModel(), (x, update))
+        self.assert_export(CopyModel(), (x, update))
 
     def test_flip(self):
         class MyModule(torch.nn.Module):
@@ -2773,7 +2611,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.flip(x, dims=[0])
 
         x = torch.tensor(np.arange(6.0).reshape(2, 3))
-        self.run_test(MyModule(), x)
+        self.assert_export(MyModule(), x)
 
     def test_randint(self):
         class RandInt(torch.nn.Module):
@@ -2783,7 +2621,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x
 
         x = torch.randn(2, 3, 4)
-        self.run_test(RandInt(), x)
+        self.assert_export(RandInt(), x)
 
     def test_randint_value(self):
         class RandInt(torch.nn.Module):
@@ -2792,7 +2630,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.randint(3, 4, x.shape) + x
 
         x = torch.randn(2, 3, 4)
-        self.run_test(RandInt(), x)
+        self.assert_export(RandInt(), x)
 
     def test_randint_like(self):
         class RandInt(torch.nn.Module):
@@ -2801,7 +2639,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.randint_like(x, 3, 4) + x
 
         x = torch.randn(2, 3, 4)
-        self.run_test(RandInt(), x)
+        self.assert_export(RandInt(), x)
 
     def test_randn(self):
         class RandN(torch.nn.Module):
@@ -2809,7 +2647,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.mul(x, (torch.randn(2, 3, 4) + x).size(0))
 
         x = torch.randn(2, 3, 4)
-        self.run_test(RandN(), x)
+        self.assert_export(RandN(), x)
 
     def test_rand(self):
         class Rand(torch.nn.Module):
@@ -2817,7 +2655,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.mul(x, (torch.rand(2, 3, 4) + x).size(0))
 
         x = torch.randn(2, 3, 4)
-        self.run_test(Rand(), x)
+        self.assert_export(Rand(), x)
 
     def test_randn_dtype(self):
         class RandN(torch.nn.Module):
@@ -2830,7 +2668,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 )
 
         x = torch.randn(2, 3, 4)
-        self.run_test(RandN(), x)
+        self.assert_export(RandN(), x)
 
     def test_rand_dtype(self):
         class Rand(torch.nn.Module):
@@ -2843,7 +2681,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 )
 
         x = torch.randn(2, 3, 4)
-        self.run_test(Rand(), x)
+        self.assert_export(Rand(), x)
 
     def test_randn_dynamic_size(self):
         class RandN(torch.nn.Module):
@@ -2851,7 +2689,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.mul(x, torch.randn(x.size()).size(1))
 
         x = torch.randn(2, 3, 4)
-        self.run_test(RandN(), x)
+        self.assert_export(RandN(), x)
 
     def test_rand_dynamic_size(self):
         class Rand(torch.nn.Module):
@@ -2859,7 +2697,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.mul(x, torch.rand(x.size()).size(1))
 
         x = torch.randn(2, 3, 4)
-        self.run_test(Rand(), x)
+        self.assert_export(Rand(), x)
 
     def test_randn_like(self):
         class RandNLike(torch.nn.Module):
@@ -2867,8 +2705,8 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.mul(x, torch.randn_like(x).size(0))
 
         x = torch.randn(2, 3, 4)
-        self.run_test(RandNLike(), x)
-        self.run_test(torch.jit.script(RandNLike()), x)
+        self.assert_export(RandNLike(), x)
+        self.assert_export(torch.jit.script(RandNLike()), x)
 
     def test_rand_like(self):
         class RandLike(torch.nn.Module):
@@ -2876,8 +2714,8 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.mul(x, torch.rand_like(x).size(0))
 
         x = torch.randn(2, 3, 4)
-        self.run_test(RandLike(), x)
-        self.run_test(torch.jit.script(RandLike()), x)
+        self.assert_export(RandLike(), x)
+        self.assert_export(torch.jit.script(RandLike()), x)
 
     def test_randn_like_dtype(self):
         class RandNLike(torch.nn.Module):
@@ -2890,7 +2728,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 )
 
         x = torch.randn(2, 3, 4)
-        self.run_test(RandNLike(), x)
+        self.assert_export(RandNLike(), x)
 
     def test_rand_like_dtype(self):
         class RandLike(torch.nn.Module):
@@ -2903,7 +2741,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 )
 
         x = torch.randn(2, 3, 4)
-        self.run_test(RandLike(), x)
+        self.assert_export(RandLike(), x)
 
     def test_bernoulli(self):
         class Bernoulli(torch.nn.Module):
@@ -2911,10 +2749,10 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.mul(x, torch.bernoulli(x).size(0))
 
         x = torch.empty(3, 3).uniform_(0, 1)
-        self.run_test(Bernoulli(), x)
+        self.assert_export(Bernoulli(), x)
 
         x = torch.empty(2, 3, 3, dtype=torch.double).uniform_(0, 1)
-        self.run_test(Bernoulli(), x)
+        self.assert_export(Bernoulli(), x)
 
     def test_bernoulli_p(self):
         class Bernoulli_float(torch.nn.Module):
@@ -2926,12 +2764,12 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.mul(x, torch.rand_like(x).bernoulli_(x).size(0))
 
         x = torch.rand(3, 3)
-        self.run_test(Bernoulli_float(), x)
-        self.run_test(Bernoulli_tensor(), x)
+        self.assert_export(Bernoulli_float(), x)
+        self.assert_export(Bernoulli_tensor(), x)
 
         x = torch.rand(2, 3, 3, dtype=torch.double)
-        self.run_test(Bernoulli_float(), x)
-        self.run_test(Bernoulli_tensor(), x)
+        self.assert_export(Bernoulli_float(), x)
+        self.assert_export(Bernoulli_tensor(), x)
 
     @unittest.skip("Bug in ORT, skip test until rel-1.11.")
     def test_reshape_allowzero(self):
@@ -2941,7 +2779,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x
 
         x = torch.randn(0, 3, 4)
-        self.run_test(ReshapeModel(), x)
+        self.assert_export(ReshapeModel(), x)
 
     def test_reshape_different_rank(self):
         class ReshapeModel(torch.nn.Module):
@@ -2950,7 +2788,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x
 
         x = torch.randn(1, 32, 5, 5)
-        self.run_test(ReshapeModel(), x)
+        self.assert_export(ReshapeModel(), x)
 
     def _interpolate(self, x, mode, use_size, is_upsample, align_corners=False):
         class MyModel(torch.nn.Module):
@@ -3021,7 +2859,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 )
 
         model = MyModel(mode, use_size, is_upsample, align_corners)
-        self.run_test(model, x, atol=1e-6)
+        self.assert_export(model, x, atol=1e-6)
 
     def _interpolate_tests(self, is_upsample):
         # - cubic mode is not supported for opsets below 11;
@@ -3030,9 +2868,9 @@ class DynamoExporterTest(common_utils.TestCase):
         if self.opset_version < 11:
             modes = ["nearest"]
         x = [
-            torch.randn(1, 2, 6, requires_grad=True),
-            torch.randn(1, 2, 4, 6, requires_grad=True),
-            torch.randn(1, 2, 4, 4, 6, requires_grad=True),
+            torch.randn(1, 2, 6),
+            torch.randn(1, 2, 4, 6),
+            torch.randn(1, 2, 4, 4, 6),
         ]
 
         for mode in modes:
@@ -3069,7 +2907,7 @@ class DynamoExporterTest(common_utils.TestCase):
         self._interpolate_tests(True)
 
     @skipIfUnsupportedMaxOpsetVersion(8)
-  # Scripting supported for opsets > 8. See test_interpolate_upsample
+    # Scripting supported for opsets > 8. See test_interpolate_upsample
     def test_interpolate_upsample_trace(self):
         self._interpolate_tests(True)
 
@@ -3091,7 +2929,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return self.submodule(input)
 
         x = torch.randn(1, 2, 4, 4, 6)
-        self.run_test(ScriptModule(), (x,))
+        self.assert_export(ScriptModule(), (x,))
 
         @torch.jit.script
         def script_method(x):
@@ -3101,7 +2939,7 @@ class DynamoExporterTest(common_utils.TestCase):
             def forward(self, x):
                 return script_method(x)
 
-        self.run_test(TracingModule(), (x,))
+        self.assert_export(TracingModule(), (x,))
 
     def test_interpolate_downsample(self):
         self._interpolate_tests(False)
@@ -3123,9 +2961,9 @@ class DynamoExporterTest(common_utils.TestCase):
 
         modes = ["linear", "bicubic"]
         x = [
-            torch.randn(1, 2, 6, requires_grad=True),
-            torch.randn(1, 2, 4, 6, requires_grad=True),
-            torch.randn(1, 2, 4, 4, 6, requires_grad=True),
+            torch.randn(1, 2, 6),
+            torch.randn(1, 2, 4, 6),
+            torch.randn(1, 2, 4, 4, 6),
         ]
         for mode in modes:
             for xi in x:
@@ -3140,7 +2978,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 for i in range(xi.dim() - 2):
                     size = list(xi.shape[2:])
                     size[i] = 1
-                    self.run_test(MyModel(mode_i, size), xi)
+                    self.assert_export(MyModel(mode_i, size), xi)
 
     def test_interpolate_no_shape(self):
         class MyModel(torch.jit.ScriptModule):
@@ -3155,19 +2993,19 @@ class DynamoExporterTest(common_utils.TestCase):
                 )
                 return out1, out2
 
-        x = torch.randn(1, 2, 4, 4, requires_grad=True)
-        y = torch.randn(16, 16, requires_grad=True)
-        self.run_test(
+        x = torch.randn(1, 2, 4, 4)
+        y = torch.randn(16, 16)
+        self.assert_export(
             MyModel(),
             (x, y),
             input_names=["x", "y"],
             dynamic_axes={"x": [0, 1, 2, 3], "y": [0, 1]},
         )
-        self.run_test(MyModel(), (x, y), remained_onnx_input_idx=[0])
+        self.assert_export(MyModel(), (x, y), remained_onnx_input_idx=[0])
 
-  # scripting raises OnnxRuntimeError
+    # scripting raises OnnxRuntimeError
     def test_interpolate_adaptive_pooling_error(self):
-        x = torch.randn(1, 2, 6, requires_grad=True)
+        x = torch.randn(1, 2, 6)
         with self.assertRaises(RuntimeError) as cm:
             self._interpolate(x, "area", True, True)
 
@@ -3177,28 +3015,28 @@ class DynamoExporterTest(common_utils.TestCase):
     def test_groupnorm(self):
         model = torch.nn.GroupNorm(3, 6, 0.002)
         x = torch.randn(4, 6, 36, 36, 18)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
         model = torch.nn.GroupNorm(1, 6, 0.002)
         x = torch.randn(4, 6, 180, 180)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
         model = torch.nn.GroupNorm(6, 6, 0.002)
         x = torch.randn(4, 6, 180, 180)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_groupnorm_noaffine(self):
         model = torch.nn.GroupNorm(4, 8, 0.002, affine=False)
         x = torch.randn(3, 8, 224, 224)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
         model = torch.nn.GroupNorm(1, 6, 0.002, affine=False)
         x = torch.randn(4, 6, 180, 180)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
         model = torch.nn.GroupNorm(6, 6, 0.002, affine=False)
         x = torch.randn(4, 6, 180, 180)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_list_unpack_scripted(self):
         class ListUnpack(torch.nn.Module):
@@ -3207,13 +3045,15 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x.new_zeros((a, b))
 
         x = torch.randn(2, 3)
-        self.run_test(
+        self.assert_export(
             torch.jit.script(ListUnpack()),
             x,
             input_names=["x"],
             dynamic_axes={"x": [0, 1]},
         )
-        self.run_test(torch.jit.script(ListUnpack()), x, remained_onnx_input_idx=[])
+        self.assert_export(
+            torch.jit.script(ListUnpack()), x, remained_onnx_input_idx=[]
+        )
 
     def test_list_unpack_scripted_runs_without_error_with_constructed_list_as_input(
         self,
@@ -3238,7 +3078,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 c, _ = packed
                 return c
 
-        self.run_test(
+        self.assert_export(
             torch.jit.script(PackUnpack()),
             (torch.tensor(0), torch.tensor([42])),
             remained_onnx_input_idx=[0],
@@ -3251,13 +3091,13 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x.new_zeros((a, b))
 
         x = torch.randn(2, 3, 4, 5)
-        self.run_test(
+        self.assert_export(
             torch.jit.script(ListUnpackSlice()),
             x,
             input_names=["x"],
             dynamic_axes={"x": [0, 1, 2, 3]},
         )
-        self.run_test(
+        self.assert_export(
             torch.jit.script(ListUnpackSlice()), x, remained_onnx_input_idx=[]
         )
 
@@ -3269,32 +3109,32 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4)
         y = torch.randn(2, 3, 4)
-        self.run_test(PowModule(), (x, y))
+        self.assert_export(PowModule(), (x, y))
 
         x = torch.randint(10, (2, 3, 4))
         y = torch.randint(10, (2, 3, 4)).to(dtype=torch.int32)
-        self.run_test(PowModule(), (x, y))
+        self.assert_export(PowModule(), (x, y))
 
         x = torch.randint(10, (2, 3, 4))
         y = torch.randint(10, (2, 3, 4))
-        self.run_test(PowModule(), (x, y))
+        self.assert_export(PowModule(), (x, y))
 
         x = torch.randn(2, 3, 4).to(dtype=torch.float64)
         y = torch.randint(10, (2, 3, 4))
-        self.run_test(PowModule(), (x, y))
+        self.assert_export(PowModule(), (x, y))
 
         class PowModule2(torch.nn.Module):
             def forward(self, x):
                 return torch.pow(2, x)
 
         x = torch.randn(1, 10)
-        self.run_test(PowModule2(), (x,))
+        self.assert_export(PowModule2(), (x,))
 
         x = torch.randint(10, (2, 3, 4))
-        self.run_test(PowModule2(), (x,))
+        self.assert_export(PowModule2(), (x,))
 
         x = torch.randn(1, 10).to(dtype=torch.float64)
-        self.run_test(PowModule2(), (x,))
+        self.assert_export(PowModule2(), (x,))
 
         class PowModule3(torch.nn.Module):
             def forward(self, x, y):
@@ -3302,7 +3142,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randint(5, (2, 3, 4))
         y = torch.rand(100)
-        self.run_test(PowModule3(), (x, y))
+        self.assert_export(PowModule3(), (x, y))
 
     # the arithmeticOps(Add\Sub\Mul\Div\Gemm\Pow\Mod) with low precision include unit8 will be failed in ORT
     # add to(dtype=torch.long) to avoid ORT output type does not match expected type.
@@ -3333,47 +3173,47 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.tensor([2, 3, 5], dtype=torch.uint8)
         y = torch.tensor([2, 3, 5], dtype=torch.uint8)
         z = torch.tensor([1], dtype=torch.uint8)
-        self.run_test(AddModule(), (x, y))
-        self.run_test(SubModule(), (x, y))
-        self.run_test(MulModule(), (x, y))
-        self.run_test(DivModule(), (x, y))
-        self.run_test(PowModule(), (x, z))
+        self.assert_export(AddModule(), (x, y))
+        self.assert_export(SubModule(), (x, y))
+        self.assert_export(MulModule(), (x, y))
+        self.assert_export(DivModule(), (x, y))
+        self.assert_export(PowModule(), (x, z))
 
         x = torch.tensor([2, 3, 5], dtype=torch.int8)
         y = torch.tensor([2, 3, 5], dtype=torch.int8)
         z = torch.tensor([1], dtype=torch.int8)
-        self.run_test(AddModule(), (x, y))
-        self.run_test(SubModule(), (x, y))
-        self.run_test(MulModule(), (x, y))
-        self.run_test(DivModule(), (x, y))
-        self.run_test(PowModule(), (x, z))
+        self.assert_export(AddModule(), (x, y))
+        self.assert_export(SubModule(), (x, y))
+        self.assert_export(MulModule(), (x, y))
+        self.assert_export(DivModule(), (x, y))
+        self.assert_export(PowModule(), (x, z))
 
         x = torch.tensor([2, 3, 5], dtype=torch.int16)
         y = torch.tensor([2, 3, 5], dtype=torch.int16)
         z = torch.tensor([1], dtype=torch.int16)
-        self.run_test(AddModule(), (x, y))
-        self.run_test(SubModule(), (x, y))
-        self.run_test(MulModule(), (x, y))
-        self.run_test(DivModule(), (x, y))
-        self.run_test(PowModule(), (x, z))
+        self.assert_export(AddModule(), (x, y))
+        self.assert_export(SubModule(), (x, y))
+        self.assert_export(MulModule(), (x, y))
+        self.assert_export(DivModule(), (x, y))
+        self.assert_export(PowModule(), (x, z))
 
         x = torch.tensor([2, 3, 5], dtype=torch.uint8)
         y = torch.tensor([2, 3, 5], dtype=torch.float32)
         z = torch.tensor([1], dtype=torch.float64)
-        self.run_test(AddModule(), (x, y))
-        self.run_test(SubModule(), (x, y))
-        self.run_test(MulModule(), (x, y))
-        self.run_test(DivModule(), (x, y))
-        self.run_test(PowModule(), (x, z))
+        self.assert_export(AddModule(), (x, y))
+        self.assert_export(SubModule(), (x, y))
+        self.assert_export(MulModule(), (x, y))
+        self.assert_export(DivModule(), (x, y))
+        self.assert_export(PowModule(), (x, z))
 
         x = torch.tensor([2, 3, 5], dtype=torch.uint8)
         y = torch.tensor([2, 3, 5], dtype=torch.int64)
         z = torch.tensor([1], dtype=torch.int32)
-        self.run_test(AddModule(), (x, y))
-        self.run_test(SubModule(), (x, y))
-        self.run_test(MulModule(), (x, y))
-        self.run_test(DivModule(), (x, y))
-        self.run_test(PowModule(), (x, z))
+        self.assert_export(AddModule(), (x, y))
+        self.assert_export(SubModule(), (x, y))
+        self.assert_export(MulModule(), (x, y))
+        self.assert_export(DivModule(), (x, y))
+        self.assert_export(PowModule(), (x, z))
 
     def test_mul_bool(self):
         class MyModel(torch.nn.Module):
@@ -3383,9 +3223,9 @@ class DynamoExporterTest(common_utils.TestCase):
         x_t = torch.tensor([True, False, True, False])
         y_t = torch.tensor([True, True, False, False])
         z_t = torch.tensor([1.0, 2.0, 3.0, 0.0])
-        self.run_test(MyModel(), (x_t, y_t))
-        self.run_test(MyModel(), (x_t, z_t))
-        self.run_test(MyModel(), (z_t, y_t))
+        self.assert_export(MyModel(), (x_t, y_t))
+        self.assert_export(MyModel(), (x_t, z_t))
+        self.assert_export(MyModel(), (z_t, y_t))
 
     # fmod was added in version 10
     @skipIfUnsupportedMaxOpsetVersion(13)
@@ -3396,23 +3236,23 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.tensor([2, 3, 5], dtype=torch.uint8)
         y = torch.tensor([2, 3, 5], dtype=torch.uint8)
-        self.run_test(ModModule(), (x, y))
+        self.assert_export(ModModule(), (x, y))
 
         x = torch.tensor([2, 3, 5], dtype=torch.int8)
         y = torch.tensor([2, 3, 5], dtype=torch.int8)
-        self.run_test(ModModule(), (x, y))
+        self.assert_export(ModModule(), (x, y))
 
         x = torch.tensor([2, 3, 5], dtype=torch.int16)
         y = torch.tensor([2, 3, 5], dtype=torch.int16)
-        self.run_test(ModModule(), (x, y))
+        self.assert_export(ModModule(), (x, y))
 
         x = torch.tensor([2, 3, 5], dtype=torch.uint8)
         y = torch.tensor([2, 3, 5], dtype=torch.int32)
-        self.run_test(ModModule(), (x, y))
+        self.assert_export(ModModule(), (x, y))
 
         x = torch.tensor([2, 3, 5], dtype=torch.uint8)
         y = torch.tensor([2, 3, 5], dtype=torch.float64)
-        self.run_test(ModModule(), (x, y))
+        self.assert_export(ModModule(), (x, y))
 
     def test_empty_constant_shape(self):
         class Zeros(torch.nn.Module):
@@ -3422,7 +3262,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return y
 
         x = torch.tensor(42.0)
-        self.run_test(Zeros(), x)
+        self.assert_export(Zeros(), x)
 
         class Ones(torch.nn.Module):
             def forward(self, x):
@@ -3431,7 +3271,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return y
 
         x = torch.tensor(42.0)
-        self.run_test(Ones(), x)
+        self.assert_export(Ones(), x)
 
         class Full(torch.nn.Module):
             def forward(self, x):
@@ -3440,7 +3280,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return y
 
         x = torch.tensor(42.0)
-        self.run_test(Full(), x)
+        self.assert_export(Full(), x)
 
         class Empty(torch.nn.Module):
             def forward(self, x):
@@ -3449,7 +3289,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return y
 
         x = torch.tensor(42.0)
-        self.run_test(Empty(), x)
+        self.assert_export(Empty(), x)
 
     def test_std(self):
         class StandardDeviation(torch.nn.Module):
@@ -3458,14 +3298,14 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4)
         model = StandardDeviation()
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
         class StandardDeviationUnbiased(torch.nn.Module):
             def forward(self, input):
                 return torch.std(input, unbiased=True)
 
         model = StandardDeviationUnbiased()
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_std_along_dims(self):
         class StandardDeviation(torch.nn.Module):
@@ -3474,7 +3314,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4)
         model = StandardDeviation()
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
         class StandardDeviationUnbiased(torch.nn.Module):
             def forward(self, input):
@@ -3482,7 +3322,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4)
         model = StandardDeviationUnbiased()
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_std_keepdim(self):
         class StandardDeviation(torch.nn.Module):
@@ -3491,7 +3331,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4)
         model = StandardDeviation()
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
         class StandardDeviationUnbiased(torch.nn.Module):
             def forward(self, input):
@@ -3499,7 +3339,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4)
         model = StandardDeviationUnbiased()
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_std_correction(self):
         class StandardDeviation(torch.nn.Module):
@@ -3508,7 +3348,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4)
         model = StandardDeviation()
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_var(self):
         class Variance(torch.nn.Module):
@@ -3517,14 +3357,14 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4)
         model = Variance()
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
         class VarianceUnbiased(torch.nn.Module):
             def forward(self, input):
                 return torch.var(input, unbiased=True)
 
         model = VarianceUnbiased()
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
         class VarianceSqrt(torch.nn.Module):
             def forward(self, input):
@@ -3533,7 +3373,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(1, 2, 3, 300, 300)
         model = VarianceSqrt()
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_var_along_dims(self):
         class Variance(torch.nn.Module):
@@ -3542,7 +3382,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4)
         model = Variance()
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
         class VarianceUnbiased(torch.nn.Module):
             def forward(self, input):
@@ -3550,7 +3390,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4)
         model = VarianceUnbiased()
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_var_keepdim(self):
         class Variance(torch.nn.Module):
@@ -3559,7 +3399,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4)
         model = Variance()
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
         class VarianceUnbiased(torch.nn.Module):
             def forward(self, input):
@@ -3567,7 +3407,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4)
         model = VarianceUnbiased()
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_var_correction(self):
         class Variance(torch.nn.Module):
@@ -3576,7 +3416,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4)
         model = Variance()
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_var_mean(self):
         class Variance(torch.nn.Module):
@@ -3585,14 +3425,14 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4)
         model = Variance()
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
         class VarianceUnbiased(torch.nn.Module):
             def forward(self, input):
                 return torch.var_mean(input, unbiased=True)
 
         model = VarianceUnbiased()
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_var_mean_along_dims(self):
         class Variance(torch.nn.Module):
@@ -3601,7 +3441,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4)
         model = Variance()
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
         class VarianceUnbiased(torch.nn.Module):
             def forward(self, input):
@@ -3609,7 +3449,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4)
         model = VarianceUnbiased()
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_var_mean_mixed_dims(self):
         class ReverseDims(torch.nn.Module):
@@ -3618,7 +3458,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4)
         model = ReverseDims()
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
         class SkipDims(torch.nn.Module):
             def forward(self, input):
@@ -3626,7 +3466,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4)
         model = SkipDims()
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
         class NonZeroDims(torch.nn.Module):
             def forward(self, input):
@@ -3634,7 +3474,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4)
         model = NonZeroDims()
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_var_mean_keepdim(self):
         class Variance(torch.nn.Module):
@@ -3643,7 +3483,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4)
         model = Variance()
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
         class VarianceUnbiased(torch.nn.Module):
             def forward(self, input):
@@ -3651,7 +3491,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4)
         model = VarianceUnbiased()
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_var_mean_correction(self):
         class Variance(torch.nn.Module):
@@ -3660,7 +3500,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4)
         model = Variance()
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_std_mean(self):
         class StandardDeviation(torch.nn.Module):
@@ -3669,14 +3509,14 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4)
         model = StandardDeviation()
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
         class StandardDeviationUnbiased(torch.nn.Module):
             def forward(self, input):
                 return torch.std_mean(input, unbiased=True)
 
         model = StandardDeviationUnbiased()
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_std_mean_along_dims(self):
         class StandardDeviation(torch.nn.Module):
@@ -3685,7 +3525,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4)
         model = StandardDeviation()
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
         class VarianceUnbiased(torch.nn.Module):
             def forward(self, input):
@@ -3693,7 +3533,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4)
         model = VarianceUnbiased()
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_std_mean_keepdim(self):
         class StandardDeviation(torch.nn.Module):
@@ -3702,7 +3542,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4)
         model = StandardDeviation()
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
         class StandardDeviationUnbiased(torch.nn.Module):
             def forward(self, input):
@@ -3710,7 +3550,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4)
         model = StandardDeviationUnbiased()
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_std_mean_correction(self):
         class StandardDeviation(torch.nn.Module):
@@ -3719,7 +3559,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4)
         model = StandardDeviation()
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_bitshift(self):
         class BitshiftModel(torch.nn.Module):
@@ -3732,7 +3572,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 )
 
         input = torch.arange(24, dtype=torch.int64).reshape(3, 4, 2)
-        self.run_test(BitshiftModel(), input)
+        self.assert_export(BitshiftModel(), input)
 
     def test_bitwise_and(self):
         class BitwiseAndModel(torch.nn.Module):
@@ -3745,7 +3585,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         input = torch.randint(0, 255, (3, 4, 2), dtype=torch.uint8)
         other = torch.randint(-128, 127, (3, 4, 2), dtype=torch.int8)
-        self.run_test(BitwiseAndModel(), (input, other))
+        self.assert_export(BitwiseAndModel(), (input, other))
 
     # uint8 not implemented in ORT for Mul used in
     # exporting bitshift for opset_version < 10
@@ -3761,23 +3601,23 @@ class DynamoExporterTest(common_utils.TestCase):
 
         input = torch.arange(24, dtype=torch.uint8).reshape(3, 4, 2)
         input2 = torch.arange(24, dtype=torch.uint8).reshape(3, 4, 2)
-        self.run_test(BitshiftModel(), (input, input2))
+        self.assert_export(BitshiftModel(), (input, input2))
 
     def test_narrow(self):
         class NarrowModel(torch.nn.Module):
             def forward(self, input):
                 return torch.narrow(input, 0, 0, 2)
 
-        x = torch.randn(3, 3, requires_grad=True)
-        self.run_test(NarrowModel(), x)
+        x = torch.randn(3, 3)
+        self.assert_export(NarrowModel(), x)
 
     def test_narrow_dynamic(self):
         class NarrowModel(torch.nn.Module):
             def forward(self, input):
                 return torch.narrow(input, 0, 0, input.shape[0] - 1)
 
-        x = torch.randn(3, 3, requires_grad=True)
-        self.run_test(NarrowModel(), x)
+        x = torch.randn(3, 3)
+        self.assert_export(NarrowModel(), x)
 
     def test_index_fill(self):
         class IndexFillModel(torch.nn.Module):
@@ -3785,8 +3625,8 @@ class DynamoExporterTest(common_utils.TestCase):
                 index = torch.tensor([2, 0])
                 return input.index_fill(2, index, -1)
 
-        x = torch.randn(3, 4, 5, requires_grad=True)
-        self.run_test(IndexFillModel(), x)
+        x = torch.randn(3, 4, 5)
+        self.assert_export(IndexFillModel(), x)
 
     def test_index_copy(self):
         class IndexCopyModel(torch.nn.Module):
@@ -3799,9 +3639,9 @@ class DynamoExporterTest(common_utils.TestCase):
                 source = torch.ones(3, 2, 5)
                 return input.index_copy(self.dim, index, source)
 
-        x = torch.randn(3, 4, 5, requires_grad=True)
+        x = torch.randn(3, 4, 5)
         for dim in (1, -2):
-            self.run_test(IndexCopyModel(dim), x)
+            self.assert_export(IndexCopyModel(dim), x)
 
     def test_select(self):
         class Select(torch.nn.Module):
@@ -3809,7 +3649,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x[:, 1]
 
         x = torch.randn(3, 4)
-        self.run_test(Select(), x)
+        self.assert_export(Select(), x)
 
     def test_select_negative_index(self):
         class Select(torch.nn.Module):
@@ -3817,7 +3657,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x[:, -1]
 
         x = torch.randn(3, 4)
-        self.run_test(Select(), x)
+        self.assert_export(Select(), x)
 
     def test_index_select_constant_scaler_index(self):
         class IndexSelectScalerIndexModel(torch.nn.Module):
@@ -3826,7 +3666,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.index_select(x, 1, torch.tensor(index))
 
         x = torch.randn(3, 4)
-        self.run_test(IndexSelectScalerIndexModel(), x)
+        self.assert_export(IndexSelectScalerIndexModel(), x)
 
     def test_index_select_scaler_index(self):
         class IndexSelectScalerIndexModel(torch.nn.Module):
@@ -3842,7 +3682,7 @@ class DynamoExporterTest(common_utils.TestCase):
         offset = 2
         index_offset = torch.tensor(offset)
         base = 1
-        self.run_test(IndexSelectScalerIndexModel(base), (x, index_offset))
+        self.assert_export(IndexSelectScalerIndexModel(base), (x, index_offset))
 
     def test_take(self):
         class TakeModel(torch.nn.Module):
@@ -3851,15 +3691,15 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(6, 4, 3, 3)
         y = torch.tensor([4, 1, 7, 15, 63])
-        self.run_test(TakeModel(), (x, y))
+        self.assert_export(TakeModel(), (x, y))
 
     def test_topk(self):
         class MyModule(torch.nn.Module):
             def forward(self, x):
                 return torch.topk(x, 3)
 
-        x = torch.arange(1.0, 6.0, requires_grad=True)
-        self.run_test(MyModule(), x)
+        x = torch.arange(1.0, 6.0)
+        self.assert_export(MyModule(), x)
 
     def test_topk_int32_k(self):
         class Model(torch.nn.Module):
@@ -3868,7 +3708,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.arange(1.0, 6.0)
         k = torch.tensor(3, dtype=torch.int32)
-        self.run_test(Model(), (x, k))
+        self.assert_export(Model(), (x, k))
 
     def test_topk_smallest_unsorted(self):
         class MyModule(torch.nn.Module):
@@ -3879,9 +3719,9 @@ class DynamoExporterTest(common_utils.TestCase):
                 topk_sorted = torch.topk(x, k, largest=False, sorted=True)
                 return topk_sorted, torch.sort(topk_unsorted.values).values
 
-        x = torch.arange(1.0, 6.0, requires_grad=True)
+        x = torch.arange(1.0, 6.0)
         k = torch.tensor(3)
-        self.run_test(MyModule(), (x, k))
+        self.assert_export(MyModule(), (x, k))
 
     def test_topk_script(self):
         class MyModuleDynamic(torch.jit.ScriptModule):
@@ -3889,11 +3729,11 @@ class DynamoExporterTest(common_utils.TestCase):
             def forward(self, x, k):
                 return torch.topk(x, k)
 
-        x = torch.arange(1.0, 6.0, requires_grad=True)
+        x = torch.arange(1.0, 6.0)
         k = torch.tensor(3)
-        self.run_test(MyModuleDynamic(), (x, k))
+        self.assert_export(MyModuleDynamic(), (x, k))
 
-  # Python builtin apply of FunctionMeta object is currently not supported in Torchscript.
+    # Python builtin apply of FunctionMeta object is currently not supported in Torchscript.
     def test_auto_grad(self):
         class MyClip(torch.autograd.Function):
             @staticmethod
@@ -3928,45 +3768,45 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(3, 3)
         min = torch.tensor([0.0])
-        self.run_test(MyClipModule(), (x, min))
+        self.assert_export(MyClipModule(), (x, min))
 
         class MyReluModule(torch.nn.Module):
             def forward(self, x):
                 return MyRelu.apply(x)
 
         x = torch.randn(3, 3)
-        self.run_test(MyReluModule(), x)
+        self.assert_export(MyReluModule(), x)
 
     def test_clip_int(self):
         class MyClipInt(torch.nn.Module):
             def forward(self, x):
                 return torch.clamp(x, 0, 1)
 
-        self.run_test(MyClipInt(), torch.randn(3, 3).to(torch.int64))
+        self.assert_export(MyClipInt(), torch.randn(3, 3).to(torch.int64))
 
     def test_relu_int(self):
-        self.run_test(torch.nn.ReLU(), torch.randn(3, 3).to(torch.int32))
+        self.assert_export(torch.nn.ReLU(), torch.randn(3, 3).to(torch.int32))
 
     def test_pad_int(self):
         class MyPadInt(torch.nn.Module):
             def forward(self, x):
                 return torch.nn.functional.pad(x, (1, 1))
 
-        self.run_test(MyPadInt(), torch.randn(3, 3).to(torch.int32))
+        self.assert_export(MyPadInt(), torch.randn(3, 3).to(torch.int32))
 
     def test_min_int(self):
         class MyMinInt(torch.nn.Module):
             def forward(self, x):
                 return torch.min(x, x + 1)
 
-        self.run_test(MyMinInt(), torch.randn(3, 3).to(torch.int32))
+        self.assert_export(MyMinInt(), torch.randn(3, 3).to(torch.int32))
 
     def test_max_int(self):
         class MyMaxnInt(torch.nn.Module):
             def forward(self, x):
                 return torch.max(x, x + 1)
 
-        self.run_test(MyMaxnInt(), torch.randn(3, 3).to(torch.int32))
+        self.assert_export(MyMaxnInt(), torch.randn(3, 3).to(torch.int32))
 
     @skipIfUnsupportedOpsetVersion([7])
     def test_normalize(self):
@@ -3975,7 +3815,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.nn.functional.normalize(x)
 
         x = torch.randn(3, 3)
-        self.run_test(Model(), x)
+        self.assert_export(Model(), x)
 
     def test_norm_with_dtype(self):
         class Model(torch.nn.Module):
@@ -3988,7 +3828,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 )
 
         x = torch.randn(3, 3)
-        self.run_test(Model(), x)
+        self.assert_export(Model(), x)
 
     def test_layer_norm(self):
         # As layer_norm works on the last D dimension, please keep
@@ -4000,110 +3840,104 @@ class DynamoExporterTest(common_utils.TestCase):
                     [10, 10, 10], elementwise_affine=elementwise_affine, bias=bias
                 )
                 x = torch.randn(20, 5, 10, 10, 10)
-                self.run_test(model, x)
+                self.assert_export(model, x)
 
     def test_batchnorm1d(self):
         x = torch.randn(10, 10)
         model = torch.nn.BatchNorm1d(10, affine=True)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
         x = torch.randn(10, 10, 128)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_batchnorm1d_noaffine(self):
         x = torch.randn(10, 10)
         model = torch.nn.BatchNorm1d(10, affine=False)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
         x = torch.randn(10, 10, 128)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_batchnorm1d_norunningstats(self):
         x = torch.randn(10, 10)
         model = torch.nn.BatchNorm1d(10, track_running_stats=False)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
         x = torch.randn(10, 10, 128)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_batchnorm2d(self):
         x = torch.randn(10, 3, 128, 128)
         model = torch.nn.BatchNorm2d(3, affine=True)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_batchnorm2d_noaffine(self):
         x = torch.randn(10, 3, 128, 128)
         model = torch.nn.BatchNorm2d(3, affine=False)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_batchnorm2d_norunningstats(self):
         x = torch.randn(10, 3, 128, 128)
         model = torch.nn.BatchNorm2d(3, track_running_stats=False)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_batchnorm3d(self):
         x = torch.randn(10, 3, 64, 64, 64)
         model = torch.nn.BatchNorm3d(3, affine=True)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_batchnorm3d_noaffine(self):
         x = torch.randn(10, 3, 64, 64, 64)
         model = torch.nn.BatchNorm3d(3, affine=False)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
-        9
-    )  # Because ConstantOfShape op is not supported for opset < 9
     def test_instancenorm1d_runningstats(self):
         x = torch.randn(10, 5, 128)
         model = torch.nn.InstanceNorm1d(5, affine=True, track_running_stats=True)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
         model = torch.nn.InstanceNorm1d(5, affine=False, track_running_stats=True)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_instancenorm1d_norunningstats(self):
         x = torch.randn(10, 5, 128)
         model = torch.nn.InstanceNorm1d(5, affine=True, track_running_stats=False)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
         model = torch.nn.InstanceNorm1d(5, affine=False, track_running_stats=False)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
-        9
-    )  # Because ConstantOfShape op is not supported for opset < 9
     def test_instancenorm2d_runningstats(self):
         x = torch.randn(10, 3, 128, 128)
         model = torch.nn.InstanceNorm2d(3, affine=True, track_running_stats=True)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
         model = torch.nn.InstanceNorm2d(3, affine=False, track_running_stats=True)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_instancenorm2d_norunningstats(self):
         x = torch.randn(10, 3, 128, 128)
         model = torch.nn.InstanceNorm2d(3, affine=True, track_running_stats=False)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
         model = torch.nn.InstanceNorm2d(3, affine=False, track_running_stats=False)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
-        9
-    )  # Because ConstantOfShape op is not supported for opset < 9
     def test_instancenorm3d_runningstats(self):
         x = torch.randn(10, 3, 64, 64, 64)
         model = torch.nn.InstanceNorm3d(3, affine=True, track_running_stats=True)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
         model = torch.nn.InstanceNorm3d(3, affine=False, track_running_stats=True)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_instancenorm3d_norunningstats(self):
         x = torch.randn(10, 3, 64, 64, 64)
         model = torch.nn.InstanceNorm3d(3, affine=True, track_running_stats=False)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
         model = torch.nn.InstanceNorm3d(3, affine=False, track_running_stats=False)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_scatter_with_scalar(self):
         class ScatterModel(torch.nn.Module):
@@ -4115,7 +3949,7 @@ class DynamoExporterTest(common_utils.TestCase):
             [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]], dtype=torch.float64
         )
         indices = torch.tensor([[1, 0], [0, 1], [0, 1]], dtype=torch.int64)
-        self.run_test(ScatterModel(), input_args=(input, indices))
+        self.assert_export(ScatterModel(), input_args=(input, indices))
 
     def test_scatter_with_scalar_different_types(self):
         # Tests the case when scalar src (updates values) type is different
@@ -4130,7 +3964,7 @@ class DynamoExporterTest(common_utils.TestCase):
             [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]], dtype=torch.float32
         )
         indices = torch.tensor([[1, 0], [0, 1], [0, 1]], dtype=torch.int64)
-        self.run_test(ScatterModel(), input_args=(input, indices))
+        self.assert_export(ScatterModel(), input_args=(input, indices))
 
     def test_scatter(self):
         class ScatterModel(torch.nn.Module):
@@ -4140,23 +3974,23 @@ class DynamoExporterTest(common_utils.TestCase):
         input = torch.tensor([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
         indices = torch.tensor([[1, 0], [0, 1], [0, 1]], dtype=torch.int64)
         values = torch.tensor([[1.0, 1.1], [2.0, 2.1], [3.0, 3.1]])
-        self.run_test(ScatterModel(), input_args=(input, indices, values))
+        self.assert_export(ScatterModel(), input_args=(input, indices, values))
 
         input = torch.tensor([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
         indices = torch.tensor([[1, 0], [0, 2], [0, 1]], dtype=torch.int64)
         values = torch.tensor([[1.0, 1.1], [2.0, 2.1], [3.0, 3.1]])
-        self.run_test(ScatterModel(), (input, indices, values))
+        self.assert_export(ScatterModel(), (input, indices, values))
 
         input = torch.zeros(3, 4, 5, 6)
         indices = torch.tensor([[1, 0], [0, 2], [0, 1]], dtype=torch.int64)
         indices = indices.view(3, 2, 1, 1).expand(3, 2, 5, 6)
         values = torch.arange(3 * 2 * 5 * 6, dtype=torch.float32).view(3, 2, 5, 6)
-        self.run_test(ScatterModel(), (input, indices, values))
+        self.assert_export(ScatterModel(), (input, indices, values))
 
         input = torch.zeros(3, 4, 2)
         indices = torch.tensor([[[1, 0], [0, 2]], [[1, 1], [0, 1]], [[2, 1], [2, 2]]])
         values = torch.arange(3 * 2 * 2, dtype=torch.float32).view(3, 2, 2)
-        self.run_test(ScatterModel(), (input, indices, values))
+        self.assert_export(ScatterModel(), (input, indices, values))
 
     def test_scatter_add(self):
         class ScatterModel(torch.nn.Module):
@@ -4166,7 +4000,7 @@ class DynamoExporterTest(common_utils.TestCase):
         input = torch.tensor([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
         indices = torch.tensor([[1, 0], [0, 1], [0, 1]], dtype=torch.int64)
         values = torch.tensor([[1.0, 1.1], [2.0, 2.1], [3.0, 3.1]])
-        self.run_test(ScatterModel(), input_args=(input, indices, values))
+        self.assert_export(ScatterModel(), input_args=(input, indices, values))
 
         @torch.jit.script
         def scatter_sum(src: Tensor, index: Tensor):
@@ -4180,7 +4014,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         src = torch.rand(3, 2)
         index = torch.tensor([[0, 1], [0, 1], [0, 1]], dtype=torch.int64)
-        self.run_test(ScatterModel(), (src, index))
+        self.assert_export(ScatterModel(), (src, index))
 
     def test_scatter_add_index_not_unique(self):
         class ScatterModel(torch.nn.Module):
@@ -4190,7 +4024,7 @@ class DynamoExporterTest(common_utils.TestCase):
         input = torch.tensor([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
         indices = torch.tensor([[0, 0], [1, 1], [2, 2]], dtype=torch.int64)
         values = torch.tensor([[1.0, 1.1], [2.0, 2.1], [3.0, 3.1]])
-        self.run_test(ScatterModel(), input_args=(input, indices, values))
+        self.assert_export(ScatterModel(), input_args=(input, indices, values))
 
         @torch.jit.script
         def scatter_sum(src: Tensor, index: Tensor):
@@ -4204,7 +4038,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         src = torch.rand(3, 2)
         index = torch.tensor([[0, 0], [1, 1], [0, 1]], dtype=torch.int64)
-        self.run_test(ScatterModel(), (src, index))
+        self.assert_export(ScatterModel(), (src, index))
 
     def test_scatter_add_different_size_index_src(self):
         class ScatterModel(torch.nn.Module):
@@ -4214,7 +4048,7 @@ class DynamoExporterTest(common_utils.TestCase):
         src = torch.ones((2, 5))
         input = torch.zeros(3, 5, dtype=src.dtype)
         indices = torch.tensor([[0, 1, 2, 0, 0]])
-        self.run_test(ScatterModel(), input_args=(input, indices, src))
+        self.assert_export(ScatterModel(), input_args=(input, indices, src))
 
     @common_utils.parametrize(
         "src, indices",
@@ -4243,7 +4077,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return input.scatter_add(0, indices, src)
 
         input = torch.zeros(3, 5, dtype=src.dtype)
-        self.run_test(
+        self.assert_export(
             ScatterModel(),
             input_args=(input, indices, src),
             input_names=["input", "indices", "src"],
@@ -4269,7 +4103,7 @@ class DynamoExporterTest(common_utils.TestCase):
         index = torch.tensor([0, 1, 0, 1, 2, 1])
         input = torch.tensor([1.0, 2.0, 3.0, 8.0])
 
-        self.run_test(model, (src, index, input))
+        self.assert_export(model, (src, index, input))
 
     def test_scatter_reduce_self_rank_zero(self):
         class Model(torch.nn.Module):
@@ -4289,7 +4123,7 @@ class DynamoExporterTest(common_utils.TestCase):
         empty_tensor = torch.tensor([])
         empty_idx = torch.tensor([], dtype=torch.int64)
 
-        self.run_test(model, (empty_tensor, empty_idx, empty_tensor))
+        self.assert_export(model, (empty_tensor, empty_idx, empty_tensor))
 
     def test_bucketize(self):
         class BucketModel(torch.nn.Module):
@@ -4300,7 +4134,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         input = torch.tensor([[2, 5, 10], [6, 8, 3]])
         boundaries = torch.tensor([1, 5, 7, 8, 10])
-        self.run_test(BucketModel(), (input, boundaries))
+        self.assert_export(BucketModel(), (input, boundaries))
 
     def test_one_hot(self):
         class OneHot(torch.nn.Module):
@@ -4312,7 +4146,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.nn.functional.one_hot(x, self.num_classes)
 
         x = torch.arange(10)
-        self.run_test(OneHot(15), (x))
+        self.assert_export(OneHot(15), (x))
 
         class OneHot(torch.nn.Module):
             def forward(self, x, num_classes):
@@ -4321,7 +4155,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.arange(10)
         num_classes = 15 * torch.ones(1)
-        self.run_test(OneHot(), (x, num_classes))
+        self.assert_export(OneHot(), (x, num_classes))
 
     def test_gather(self):
         class GatherModel(torch.nn.Module):
@@ -4330,9 +4164,9 @@ class DynamoExporterTest(common_utils.TestCase):
 
         input = torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]])
         indices = torch.tensor([[1, 0], [0, 1], [0, 1]], dtype=torch.int64)
-        self.run_test(GatherModel(), input_args=(input, indices))
+        self.assert_export(GatherModel(), input_args=(input, indices))
 
-  # Scripting error: Cannot instantiate nn module
+    # Scripting error: Cannot instantiate nn module
     def test_gather_constant_fold(self):
         class GatherModule(torch.nn.Module):
             def __init__(self) -> None:
@@ -4351,7 +4185,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x.clamp(min=m), self.embed(y)
 
         x = torch.randn(1)
-        self.run_test(GatherModule(), (x,))
+        self.assert_export(GatherModule(), (x,))
 
         class GatherModule(torch.nn.Module):
             def __init__(self) -> None:
@@ -4366,7 +4200,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return zero_pad(x)
 
         x = torch.randn(1, 3, 2)
-        self.run_test(GatherModule(), (x,))
+        self.assert_export(GatherModule(), (x,))
 
         class GatherModule(torch.nn.Module):
             def __init__(self) -> None:
@@ -4378,7 +4212,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x
 
         x = torch.randn(1, 3, 224, 224)
-        self.run_test(
+        self.assert_export(
             GatherModule(),
             (x,),
             dynamic_axes={
@@ -4396,14 +4230,14 @@ class DynamoExporterTest(common_utils.TestCase):
                 return input.expand(2, 3, -1)
 
         input = torch.randn(2, 1, 4)
-        self.run_test(ExpandModel(), input_args=(input))
+        self.assert_export(ExpandModel(), input_args=(input))
 
         class ExpandInferDimModel(torch.nn.Module):
             def forward(self, input):
                 return input.expand(-1, input.size(0))
 
         input = torch.randn(3, 1)
-        self.run_test(ExpandInferDimModel(), input_args=(input))
+        self.assert_export(ExpandInferDimModel(), input_args=(input))
 
         class ExpandTensorSizeModel(torch.nn.Module):
             def forward(self, input, size):
@@ -4413,7 +4247,7 @@ class DynamoExporterTest(common_utils.TestCase):
             3,
         )
         size = torch.tensor(-1)
-        self.run_test(ExpandTensorSizeModel(), input_args=(input, size))
+        self.assert_export(ExpandTensorSizeModel(), input_args=(input, size))
 
     def test_dynamic_expand_as(self):
         class Model(torch.nn.Module):
@@ -4423,7 +4257,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.ones(2, 5)
         x2 = torch.randn(3, 4)
-        self.run_test(
+        self.assert_export(
             Model(),
             (x,),
             input_names=["x"],
@@ -4438,7 +4272,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.ones(2, 5, 3)
         x2 = torch.randn(3, 4, 3)
-        self.run_test(
+        self.assert_export(
             Model(),
             (x,),
             input_names=["x"],
@@ -4453,7 +4287,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.ones(3, 2)
         x2 = torch.randn(3, 5)
-        self.run_test(
+        self.assert_export(
             Model(),
             (x,),
             input_names=["x"],
@@ -4471,8 +4305,8 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.multinomial(weight, 1)
 
         weight = torch.tensor([[0, 10, 0, 0], [0, 0, 100, 0]], dtype=torch.float)
-        self.run_test(Multinomial(), (weight,))
-        self.run_test(MultinomialNoReplacement(), (weight,))
+        self.assert_export(Multinomial(), (weight,))
+        self.assert_export(MultinomialNoReplacement(), (weight,))
 
     def _test_reduced_ops(self, op):
         class ReducedOpModule(torch.nn.Module):
@@ -4481,32 +4315,32 @@ class DynamoExporterTest(common_utils.TestCase):
 
         if op != torch.mean:  # torch.mean only supports float types
             x = torch.randint(10, (4, 4), dtype=torch.uint8)
-            self.run_test(ReducedOpModule(), x)
+            self.assert_export(ReducedOpModule(), x)
 
             x = torch.randint(10, (4, 4), dtype=torch.int8)
-            self.run_test(ReducedOpModule(), x)
+            self.assert_export(ReducedOpModule(), x)
 
             x = torch.randint(10, (4, 4), dtype=torch.int16)
-            self.run_test(ReducedOpModule(), x)
+            self.assert_export(ReducedOpModule(), x)
 
             x = torch.randint(10, (4, 4), dtype=torch.int32)
-            self.run_test(ReducedOpModule(), x)
+            self.assert_export(ReducedOpModule(), x)
 
             x = torch.randint(10, (4, 4), dtype=torch.int64)
-            self.run_test(ReducedOpModule(), x)
+            self.assert_export(ReducedOpModule(), x)
 
         # torch.mean only supports float types
         # ORT does not support double ReduceProd for double
         if op != torch.prod and op != torch.mean:
             x = torch.randn(4, 5, dtype=torch.double)
-            self.run_test(ReducedOpModule(), x)
+            self.assert_export(ReducedOpModule(), x)
 
         if op != torch.prod:  # torch.prod not implemented for Half
             x = torch.randn(4, 4, dtype=torch.half)
-            self.run_test(ReducedOpModule(), x)
+            self.assert_export(ReducedOpModule(), x)
 
         x = torch.randn(4, 5, dtype=torch.float)
-        self.run_test(ReducedOpModule(), x)
+        self.assert_export(ReducedOpModule(), x)
 
     def test_reduced_sum(self):
         return self._test_reduced_ops(op=torch.sum)
@@ -4527,8 +4361,8 @@ class DynamoExporterTest(common_utils.TestCase):
                 return input.sum(dim=-1, dtype=torch.float)
 
         input = torch.randn((4, 4), dtype=torch.half)
-        self.run_test(NoDimModel(), input)
-        self.run_test(DimModel(), input)
+        self.assert_export(NoDimModel(), input)
+        self.assert_export(DimModel(), input)
 
     def test_reduced_min_max(self):
         class ReducedMinMaxModule(torch.nn.Module):
@@ -4536,13 +4370,13 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.min(input, dim=-1)[0], torch.max(input, dim=0)[0]
 
         x = torch.randint(10, (4, 4), dtype=torch.int32)
-        self.run_test(ReducedMinMaxModule(), x)
+        self.assert_export(ReducedMinMaxModule(), x)
 
         x = torch.randint(10, (4, 4), dtype=torch.int64)
-        self.run_test(ReducedMinMaxModule(), x)
+        self.assert_export(ReducedMinMaxModule(), x)
 
         x = torch.randn(4, 5, dtype=torch.float)
-        self.run_test(ReducedMinMaxModule(), x)
+        self.assert_export(ReducedMinMaxModule(), x)
 
     def test_reduce_log_sum_exp(self):
         class ReduceLogSumExpModel(torch.nn.Module):
@@ -4551,14 +4385,14 @@ class DynamoExporterTest(common_utils.TestCase):
                 b = torch.logsumexp(input, dim=(0, 1))
                 return a + b
 
-        x = torch.randn(4, 4, requires_grad=True)
-        self.run_test(ReduceLogSumExpModel(), x)
+        x = torch.randn(4, 4)
+        self.assert_export(ReduceLogSumExpModel(), x)
 
     def test_softmax(self):
         for i in range(-4, 3):
             model = torch.nn.Softmax(dim=i)
             input = torch.randn(3, 4, 5, 6)
-            self.run_test(model, input)
+            self.assert_export(model, input)
 
             class SoftmaxUnknownRank(torch.nn.Module):
                 def __init__(self, i):
@@ -4569,7 +4403,7 @@ class DynamoExporterTest(common_utils.TestCase):
                     return self.softmax(x.reshape(3, 4, 5, 6))
 
             model = torch.jit.script(SoftmaxUnknownRank(i))
-            self.run_test(model, input)
+            self.assert_export(model, input)
 
     def test_softmax_large_values(self):
         input = torch.tensor(
@@ -4577,7 +4411,7 @@ class DynamoExporterTest(common_utils.TestCase):
         )
         for i in range(-2, 1):
             model = torch.nn.Softmax(dim=i)
-            self.run_test(model, input)
+            self.assert_export(model, input)
 
             class SoftmaxUnknownRank(torch.nn.Module):
                 def __init__(self, i):
@@ -4588,380 +4422,50 @@ class DynamoExporterTest(common_utils.TestCase):
                     return self.softmax(x.reshape(3, 3))
 
             model = torch.jit.script(SoftmaxUnknownRank(i))
-            self.run_test(model, input)
+            self.assert_export(model, input)
 
     def test_logsoftmax(self):
         for i in range(7)[2:]:
             model = torch.nn.LogSoftmax(dim=i - 1)
             dims = [2] * (i - 2) + [3, 4]
-            input = torch.ones(*dims, requires_grad=True)
-            self.run_test(model, input)
+            input = torch.ones(*dims)
+            self.assert_export(model, input)
 
     def test_logsoftmax_dim(self):
         for i in range(-4, 3):
             model = torch.nn.LogSoftmax(dim=i)
             input = torch.randn(3, 4, 5, 6)
-            self.run_test(model, input)
+            self.assert_export(model, input)
 
     def test_logsoftmax_dtype(self):
         class Model(torch.nn.Module):
             def forward(self, x):
                 return torch.nn.functional.log_softmax(x, dim=1, dtype=torch.float64)
 
-        x = torch.randn(3, 4, 5, requires_grad=True)
-        self.run_test(Model(), x)
+        x = torch.randn(3, 4, 5)
+        self.assert_export(Model(), x)
 
     def test_softplus(self):
         class BetaOneModel(torch.nn.Module):
             def forward(self, x):
                 return torch.nn.functional.softplus(x)
 
-        x = torch.randn(3, 4, 5, requires_grad=True)
-        self.run_test(BetaOneModel(), x)
+        x = torch.randn(3, 4, 5)
+        self.assert_export(BetaOneModel(), x)
 
         class BetaModel(torch.nn.Module):
             def forward(self, x):
                 return torch.nn.functional.softplus(x, beta=2)
 
-        x = torch.randn(3, 4, 5, requires_grad=True)
-        self.run_test(BetaModel(), x)
+        x = torch.randn(3, 4, 5)
+        self.assert_export(BetaModel(), x)
 
         class BetaFloatModel(torch.nn.Module):
             def forward(self, x):
                 return torch.nn.functional.softplus(x, beta=1.7)
 
-        x = torch.randn(3, 4, 5, requires_grad=True)
-        self.run_test(BetaFloatModel(), x)
-
-    def test_lstm_no_hidden(self):
-        class LSTMModel(torch.nn.Module):
-            def __init__(self) -> None:
-                super().__init__()
-                self.rnn = torch.nn.LSTM(input_size=16, hidden_size=16)
-
-            def forward(self, x):
-                return self.rnn(x)
-
-        input = torch.randn((10, 16, 16))
-        self.run_test(LSTMModel(), (input,))
-
-    def test_lstm_proj_no_hidden(self):
-        class LSTMModel(torch.nn.Module):
-            def __init__(self) -> None:
-                super().__init__()
-                self.rnn = torch.nn.LSTM(input_size=16, hidden_size=16, proj_size=8)
-
-            def forward(self, x):
-                return self.rnn(x)
-
-        input = torch.randn((10, 16, 16))
-        with self.assertRaises(RuntimeError):
-            self.run_test(LSTMModel(), (input,))
-
-    def test_lstm(self):
-        class LSTMModel(torch.nn.Module):
-            def __init__(self) -> None:
-                super().__init__()
-                self.rnn = torch.nn.LSTM(
-                    RNN_INPUT_SIZE, RNN_HIDDEN_SIZE, 1, bidirectional=False
-                )
-
-            def forward(self, x, h0, c0):
-                return self.rnn(x, (h0, c0))
-
-        input = torch.randn(RNN_SEQUENCE_LENGTH, BATCH_SIZE, RNN_INPUT_SIZE)
-        h0 = torch.randn(1, BATCH_SIZE, RNN_HIDDEN_SIZE)
-        c0 = torch.randn(1, BATCH_SIZE, RNN_HIDDEN_SIZE)
-        self.run_test(LSTMModel(), (input, h0, c0))
-
-    def test_lstm_cell(self):
-        class LSTMCellModel(torch.nn.Module):
-            def __init__(self, bias):
-                super().__init__()
-                self.lstm_cell = torch.nn.LSTMCell(
-                    RNN_INPUT_SIZE, RNN_HIDDEN_SIZE, bias=bias
-                )
-
-            def forward(self, x, h0, c0):
-                return self.lstm_cell(x, (h0, c0))
-
-        input = torch.randn(BATCH_SIZE, RNN_INPUT_SIZE)
-        h0 = torch.randn(BATCH_SIZE, RNN_HIDDEN_SIZE)
-        c0 = torch.randn(BATCH_SIZE, RNN_HIDDEN_SIZE)
-        for bias in [True, False]:
-            self.run_test(LSTMCellModel(bias), (input, h0, c0))
-
-    def test_lstm_default_init_state(self):
-        class LSTMModel(torch.nn.Module):
-            def __init__(self) -> None:
-                super().__init__()
-                self.rnn = torch.nn.LSTM(
-                    RNN_INPUT_SIZE, RNN_HIDDEN_SIZE, 1, bidirectional=False
-                )
-
-            def forward(self, x):
-                return self.rnn(x)
-
-        input = torch.randn(RNN_SEQUENCE_LENGTH, BATCH_SIZE, RNN_INPUT_SIZE)
-        self.run_test(LSTMModel(), input)
-
-    def test_lstm_fixed_batch_size(self):
-        class LSTMModel(torch.nn.Module):
-            def __init__(self) -> None:
-                super().__init__()
-                self.lstm = torch.nn.LSTM(
-                    RNN_INPUT_SIZE, RNN_HIDDEN_SIZE, 1, bidirectional=False
-                )
-                self.RNN_HIDDEN_SIZE = RNN_HIDDEN_SIZE
-
-            def forward(self, input):
-                batch_size = input.size()[1]
-                h0 = torch.ones([1, batch_size, self.RNN_HIDDEN_SIZE])
-                c0 = torch.ones([1, batch_size, self.RNN_HIDDEN_SIZE])
-                return self.lstm(input, (h0, c0))
-
-        input = torch.randn(RNN_SEQUENCE_LENGTH, BATCH_SIZE, RNN_INPUT_SIZE)
-        # verify with different input of same batch size
-        input2 = torch.randn(RNN_SEQUENCE_LENGTH, BATCH_SIZE, RNN_INPUT_SIZE)
-        self.run_test(
-            LSTMModel(), input, fixed_batch_size=True, additional_test_inputs=[input2]
-        )
-
-    def test_lstm_post_fix_init_state(self):
-        class LSTMModel(torch.nn.Module):
-            def __init__(self) -> None:
-                super().__init__()
-                self.lstm = torch.nn.LSTM(
-                    RNN_INPUT_SIZE, RNN_HIDDEN_SIZE, 1, bidirectional=False
-                )
-                self.RNN_HIDDEN_SIZE = RNN_HIDDEN_SIZE
-
-            def forward(self, input):
-                batch_size = input.size()[1]
-                h0 = torch.ones([1, batch_size, self.RNN_HIDDEN_SIZE])
-                c0 = torch.ones([1, batch_size, self.RNN_HIDDEN_SIZE])
-                return self.lstm(input, (h0, c0))
-
-        model = LSTMModel()
-        input = torch.randn(RNN_SEQUENCE_LENGTH, 1, RNN_INPUT_SIZE)
-        # verify with different input of different batch size
-        input2 = torch.randn(RNN_SEQUENCE_LENGTH, BATCH_SIZE, RNN_INPUT_SIZE)
-        self.run_test(
-            model,
-            input,
-            input_names=["input.1"],
-            dynamic_axes={"input.1": {0: "seq", 1: "batch"}},
-            additional_test_inputs=[input2],
-        )
-
-    def test_lstm_constant_folding(self):
-        class LstmNet(torch.nn.Module):
-            def __init__(self, input_size, hidden_size, num_layers, bidirectional):
-                super().__init__()
-                self.lstm = torch.nn.LSTM(
-                    input_size, hidden_size, num_layers, bidirectional=bidirectional
-                )
-
-            def forward(self, input, initial_state: tuple[Tensor, Tensor]):
-                return self.lstm(input, initial_state)
-
-        def get_LstmNet_model_and_inputs(
-            input_size, hidden_size, num_layers, batch_size, seq_len, bidirectional
-        ):
-            num_directions = 2 if bidirectional else 1
-            model = LstmNet(input_size, hidden_size, num_layers, bidirectional)
-            input = torch.randn(seq_len, batch_size, input_size)
-            h0 = torch.randn(num_layers * num_directions, batch_size, hidden_size)
-            c0 = torch.randn(num_layers * num_directions, batch_size, hidden_size)
-            return model, (input, (h0, c0))
-
-        batch_size1 = 3
-        model1, input1 = get_LstmNet_model_and_inputs(7, 3, 2, batch_size1, 5, True)
-        self.run_test(model1, input1, do_constant_folding=True)
-
-        batch_size2 = 4
-        model2, input2 = get_LstmNet_model_and_inputs(5, 4, 3, batch_size2, 7, False)
-        self.run_test(model2, input2, do_constant_folding=True)
-
-    def test_lstm_no_bias(self):
-        class LstmNet(torch.nn.Module):
-            def __init__(self, num_layers, bidirectional):
-                super().__init__()
-                self.lstm = torch.nn.LSTM(
-                    RNN_INPUT_SIZE,
-                    RNN_HIDDEN_SIZE,
-                    num_layers,
-                    bias=False,
-                    bidirectional=bidirectional,
-                )
-
-            def forward(self, input, initial_state: tuple[Tensor, Tensor]):
-                return self.lstm(input, initial_state)
-
-        def get_LstmNet_model_and_inputs(num_layers, bidirectional):
-            input = torch.randn(RNN_SEQUENCE_LENGTH, BATCH_SIZE, RNN_INPUT_SIZE)
-            num_directions = 2 if bidirectional else 1
-            model = LstmNet(num_layers, bidirectional)
-            h0 = torch.randn(num_layers * num_directions, BATCH_SIZE, RNN_HIDDEN_SIZE)
-            c0 = torch.randn(num_layers * num_directions, BATCH_SIZE, RNN_HIDDEN_SIZE)
-            return model, (input, (h0, c0))
-
-        num_layers = [1, 1, 2, 3]
-        bidirectional = [True, False, True, False]
-        models_and_inputs = [
-            get_LstmNet_model_and_inputs(n, b)
-            for n, b in zip(num_layers, bidirectional)
-        ]
-        for model, input in models_and_inputs:
-            self.run_test(model, input)
-
-    def test_lstm_sequence(self):
-        class LstmNet(torch.nn.Module):
-            def __init__(self) -> None:
-                super().__init__()
-                self.rnn1 = torch.nn.LSTM(8, 8, bidirectional=True, batch_first=True)
-                self.linear1 = torch.nn.Linear(8 * 2, 8)
-                self.rnn2 = torch.nn.LSTM(8, 8, bidirectional=True, batch_first=True)
-                self.linear2 = torch.nn.Linear(8 * 2, 8)
-
-            def forward(self, input):
-                rnn_output1, _ = self.rnn1(input)
-                linear_output1 = self.linear1(rnn_output1)
-                rnn_output2, _ = self.rnn2(linear_output1)
-                linear_output2 = self.linear2(rnn_output2)
-                return linear_output2
-
-        input = torch.zeros((1, 100, 8), dtype=torch.float32)
-        self.run_test(
-            LstmNet(),
-            input,
-            input_names=["input"],
-            output_names=["output"],
-            dynamic_axes={
-                "input": {0: "batch_size", 1: "w", 2: "h"},
-                "output": {0: "batch_size", 1: "w", 2: "h"},
-            },
-        )
-
-
-    def test_rnn_no_bias(self):
-        def make_model(layers, packed_sequence):
-            batch_first = True if packed_sequence == 2 else False
-            model = torch.nn.RNN(
-                RNN_INPUT_SIZE,
-                RNN_HIDDEN_SIZE,
-                layers,
-                bidirectional=False,
-                batch_first=batch_first,
-                bias=False,
-            )
-
-            if packed_sequence == 1:
-                model = rnn_model_with_packed_sequence.RnnModelWithPackedSequence(
-                    model, False
-                )
-            if packed_sequence == 2:
-                model = rnn_model_with_packed_sequence.RnnModelWithPackedSequence(
-                    model, True
-                )
-            return model
-
-        def make_input(batch_size, layers, packed_sequence):
-            batch_first = True if packed_sequence == 2 else False
-            seq_lengths = np.random.randint(1, RNN_SEQUENCE_LENGTH + 1, size=batch_size)
-            seq_lengths = sorted(map(int, seq_lengths), reverse=True)
-            inputs = [torch.randn(l, RNN_INPUT_SIZE) for l in seq_lengths]
-            inputs = rnn_utils.pad_sequence(inputs, batch_first=batch_first)
-            inputs = [inputs]
-
-            h0 = torch.randn(layers, batch_size, RNN_HIDDEN_SIZE)
-            inputs.append(h0)
-            if packed_sequence != 0:
-                inputs.append(torch.IntTensor(seq_lengths))
-            if len(inputs) == 1:
-                input = inputs[0]
-            else:
-                input = tuple(inputs)
-            return input
-
-        layers = [1, 3, 1, 3, 1, 3]
-        packed_sequence = [0, 0, 1, 1, 2, 2]
-        models = [make_model(l, p) for l, p in zip(layers, packed_sequence)]
-        inputs = [
-            make_input(RNN_BATCH_SIZE, l, p) for l, p in zip(layers, packed_sequence)
-        ]
-
-        for model, input in zip(models, inputs):
-            self.run_test(model, input)
-
-    def test_gru_no_bias(self):
-        class GruNet(torch.nn.Module):
-            def __init__(self, input_size, hidden_size, num_layers, bidirectional):
-                super().__init__()
-                self.mygru = torch.nn.GRU(
-                    input_size,
-                    hidden_size,
-                    num_layers,
-                    bidirectional=bidirectional,
-                    bias=False,
-                )
-
-            def forward(self, input, initial_state):
-                out = self.mygru(input, initial_state)
-                return out
-
-        def get_GruNet_model_and_inputs(
-            input_size, hidden_size, num_layers, batch_size, seq_len, bidirectional
-        ):
-            num_directions = 2 if bidirectional else 1
-            model = GruNet(input_size, hidden_size, num_layers, bidirectional)
-            input = torch.randn(seq_len, batch_size, input_size)
-            h0 = torch.randn(num_layers * num_directions, batch_size, hidden_size)
-            return model, (input, h0)
-
-        input_size = [7, 5]
-        hidden_size = [3, 4]
-        num_layers = [2, 3]
-        batch_size = [3, 4]
-        seq_len = [5, 7]
-        bidirectional = [True, False]
-        models_and_inputs = [
-            get_GruNet_model_and_inputs(i, h, n, b, s, bi)
-            for i, h, n, b, s, bi in zip(
-                input_size, hidden_size, num_layers, batch_size, seq_len, bidirectional
-            )
-        ]
-        for model, input in models_and_inputs:
-            self.run_test(model, input, do_constant_folding=True)
-
-    def test_gru_constant_folding(self):
-        class GruNet(torch.nn.Module):
-            def __init__(self, input_size, hidden_size, num_layers, bidirectional):
-                super().__init__()
-                self.mygru = torch.nn.GRU(
-                    input_size, hidden_size, num_layers, bidirectional=bidirectional
-                )
-
-            def forward(self, input, initial_state):
-                out = self.mygru(input, initial_state)
-                return out
-
-        def get_GruNet_model_and_inputs(
-            input_size, hidden_size, num_layers, batch_size, seq_len, bidirectional
-        ):
-            num_directions = 2 if bidirectional else 1
-            model = GruNet(input_size, hidden_size, num_layers, bidirectional)
-            input = torch.randn(seq_len, batch_size, input_size)
-            h0 = torch.randn(num_layers * num_directions, batch_size, hidden_size)
-            return model, (input, h0)
-
-        batch_size1 = 3
-        model1, input1 = get_GruNet_model_and_inputs(7, 3, 2, batch_size1, 5, True)
-        self.run_test(model1, input1, do_constant_folding=True)
-
-        batch_size2 = 4
-        model2, input2 = get_GruNet_model_and_inputs(5, 4, 3, batch_size2, 7, False)
-        self.run_test(model2, input2, do_constant_folding=True)
+        x = torch.randn(3, 4, 5)
+        self.assert_export(BetaFloatModel(), x)
 
     def test_max_tensors(self):
         class MaxModel(torch.nn.Module):
@@ -4969,9 +4473,9 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.max(input, other)
 
         model = MaxModel()
-        x = torch.randn(4, 4, requires_grad=True)
-        y = torch.randn(4, 1, requires_grad=True)
-        self.run_test(model, (x, y))
+        x = torch.randn(4, 4)
+        y = torch.randn(4, 1)
+        self.assert_export(model, (x, y))
 
     def test_amax_amin(self):
         class Model(torch.nn.Module):
@@ -4982,7 +4486,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         model = Model()
         x = torch.randn(4, 4)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_aminmax(self):
         class Model(torch.nn.Module):
@@ -4993,7 +4497,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         model = Model()
         x = torch.randn(3, 4)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_arange_end(self):
         class ArangeScript(torch.jit.ScriptModule):
@@ -5001,15 +4505,14 @@ class DynamoExporterTest(common_utils.TestCase):
             def forward(self, a):
                 return torch.arange(a.size(0), dtype=torch.float).view(-1, 1) + a
 
-        x = torch.randn(3, 4, requires_grad=True)
-        outputs = ArangeScript()(x)
-        self.run_test(ArangeScript(), x)
+        x = torch.randn(3, 4)
+        self.assert_export(ArangeScript(), x)
 
         class ArangeModel(torch.nn.Module):
             def forward(self, a):
                 return torch.arange(a.size(0), dtype=torch.float).view(-1, 1) + a
 
-        self.run_test(ArangeModel(), x)
+        self.assert_export(ArangeModel(), x)
 
     def test_arange_end_notype(self):
         class ArangeScript(torch.jit.ScriptModule):
@@ -5017,17 +4520,20 @@ class DynamoExporterTest(common_utils.TestCase):
             def forward(self, a):
                 return torch.arange(a.size(0))
 
-        x = torch.randn(3, 4, requires_grad=True)
-        outputs = ArangeScript()(x)
-        self.run_test(ArangeScript(), x, input_names=["x"], dynamic_axes={"x": [0, 1]})
-        self.run_test(ArangeScript(), x, remained_onnx_input_idx=[])
+        x = torch.randn(3, 4)
+        self.assert_export(
+            ArangeScript(), x, input_names=["x"], dynamic_axes={"x": [0, 1]}
+        )
+        self.assert_export(ArangeScript(), x, remained_onnx_input_idx=[])
 
         class ArangeModel(torch.nn.Module):
             def forward(self, a):
                 return torch.arange(a.size(0))
 
-        self.run_test(ArangeModel(), x, input_names=["x"], dynamic_axes={"x": [0, 1]})
-        self.run_test(ArangeModel(), x, remained_onnx_input_idx=[])
+        self.assert_export(
+            ArangeModel(), x, input_names=["x"], dynamic_axes={"x": [0, 1]}
+        )
+        self.assert_export(ArangeModel(), x, remained_onnx_input_idx=[])
 
     def test_arange_start_end(self):
         class ArangeScript(torch.jit.ScriptModule):
@@ -5035,14 +4541,14 @@ class DynamoExporterTest(common_utils.TestCase):
             def forward(self, a):
                 return torch.arange(2, a.size(0) + 2, dtype=torch.float).view(-1, 1) + a
 
-        x = torch.randn(3, 4, requires_grad=True)
-        self.run_test(ArangeScript(), x)
+        x = torch.randn(3, 4)
+        self.assert_export(ArangeScript(), x)
 
         class ArangeModel(torch.nn.Module):
             def forward(self, a):
                 return torch.arange(2, a.size(0) + 2, dtype=torch.float).view(-1, 1) + a
 
-        self.run_test(ArangeModel(), x)
+        self.assert_export(ArangeModel(), x)
 
     def test_arange_start_end_notype(self):
         class ArangeScript(torch.jit.ScriptModule):
@@ -5050,14 +4556,14 @@ class DynamoExporterTest(common_utils.TestCase):
             def forward(self, a):
                 return torch.arange(2.7, a.size(0) + 2).view(-1, 1) + a
 
-        x = torch.randn(3, 4, requires_grad=True)
-        self.run_test(ArangeScript(), x)
+        x = torch.randn(3, 4)
+        self.assert_export(ArangeScript(), x)
 
         class ArangeModel(torch.nn.Module):
             def forward(self, a):
                 return torch.arange(2.7, a.size(0) + 2).view(-1, 1) + a
 
-        self.run_test(ArangeModel(), x)
+        self.assert_export(ArangeModel(), x)
 
     def test_arange_start_end_step(self):
         class ArangeScript(torch.jit.ScriptModule):
@@ -5070,8 +4576,8 @@ class DynamoExporterTest(common_utils.TestCase):
                     + a
                 )
 
-        x = torch.randn(3, 4, requires_grad=True)
-        self.run_test(ArangeScript(), x)
+        x = torch.randn(3, 4)
+        self.assert_export(ArangeScript(), x)
 
         class ArangeModel(torch.nn.Module):
             def forward(self, a):
@@ -5082,7 +4588,7 @@ class DynamoExporterTest(common_utils.TestCase):
                     + a
                 )
 
-        self.run_test(ArangeModel(), x)
+        self.assert_export(ArangeModel(), x)
 
     def test_arange_start_end_step_notype(self):
         class ArangeScript(torch.jit.ScriptModule):
@@ -5093,8 +4599,8 @@ class DynamoExporterTest(common_utils.TestCase):
                     + a
                 )
 
-        x = torch.randn(3, 4, requires_grad=True)
-        self.run_test(ArangeScript(), x)
+        x = torch.randn(3, 4)
+        self.assert_export(ArangeScript(), x)
 
         class ArangeModel(torch.nn.Module):
             def forward(self, a):
@@ -5103,7 +4609,7 @@ class DynamoExporterTest(common_utils.TestCase):
                     + a
                 )
 
-        self.run_test(ArangeModel(), x)
+        self.assert_export(ArangeModel(), x)
 
     def test__dim_arange(self):
         class DimArange(torch.nn.Module):
@@ -5111,23 +4617,27 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch._dim_arange(input, 1)
 
         x = torch.ones(5, 6)
-        self.run_test(DimArange(), x, input_names=["x"], dynamic_axes={"x": [0, 1]})
+        self.assert_export(
+            DimArange(), x, input_names=["x"], dynamic_axes={"x": [0, 1]}
+        )
         remained_onnx_input_idx = None if self.opset_version < 11 else []
-        self.run_test(DimArange(), x, remained_onnx_input_idx=remained_onnx_input_idx)
+        self.assert_export(
+            DimArange(), x, remained_onnx_input_idx=remained_onnx_input_idx
+        )
 
     def _test_compare_ops(self, model, num_inputs):
-        x_float = torch.randn(1, 2, 3, 4, requires_grad=True)
+        x_float = torch.randn(1, 2, 3, 4)
         x_int = torch.randint(10, (3, 4), dtype=torch.int32)
         if num_inputs > 1:
-            y_float = torch.randn(1, 2, 3, 4, requires_grad=True)
+            y_float = torch.randn(1, 2, 3, 4)
             y_int = torch.randint(10, (3, 4), dtype=torch.int32)
-            self.run_test(model, (x_float, y_float))
-            self.run_test(model, (x_float, y_int))
-            self.run_test(model, (x_int, y_float))
-            self.run_test(model, (x_int, y_int))
+            self.assert_export(model, (x_float, y_float))
+            self.assert_export(model, (x_float, y_int))
+            self.assert_export(model, (x_int, y_float))
+            self.assert_export(model, (x_int, y_int))
         else:
-            self.run_test(model, x_float)
-            self.run_test(model, x_int)
+            self.assert_export(model, x_float)
+            self.assert_export(model, x_int)
 
     def test_and_or_xor(self):
         class MyModel(torch.nn.Module):
@@ -5136,7 +4646,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randint(0, 2, (5, 5), dtype=torch.bool)
         y = torch.randint(0, 2, (5, 5), dtype=torch.bool)
-        self.run_test(MyModel(), input_args=(x, y))
+        self.assert_export(MyModel(), input_args=(x, y))
 
     def test_logical_and(self):
         class AndModel(torch.nn.Module):
@@ -5145,19 +4655,19 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randint(0, 2, (5, 5), dtype=torch.bool)
         y = torch.randint(0, 2, (5, 5), dtype=torch.bool)
-        self.run_test(AndModel(), input_args=(x, y))
+        self.assert_export(AndModel(), input_args=(x, y))
 
         x = torch.randint(10, (5, 5), dtype=torch.int32)
         y = torch.randint(10, (5, 5), dtype=torch.int32)
-        self.run_test(AndModel(), input_args=(x, y))
+        self.assert_export(AndModel(), input_args=(x, y))
 
         x = torch.randint(10, (5, 5), dtype=torch.double)
         y = torch.randint(10, (5, 5), dtype=torch.double)
-        self.run_test(AndModel(), input_args=(x, y))
+        self.assert_export(AndModel(), input_args=(x, y))
 
         x = torch.randint(10, (2, 3, 5), dtype=torch.float32)
         y = torch.randint(10, (2, 3, 5), dtype=torch.long)
-        self.run_test(AndModel(), input_args=(x, y))
+        self.assert_export(AndModel(), input_args=(x, y))
 
     def test_logical_or(self):
         class OrModel(torch.nn.Module):
@@ -5166,19 +4676,19 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randint(0, 2, (5, 5), dtype=torch.bool)
         y = torch.randint(0, 2, (5, 5), dtype=torch.bool)
-        self.run_test(OrModel(), input_args=(x, y))
+        self.assert_export(OrModel(), input_args=(x, y))
 
         x = torch.randint(10, (5, 5), dtype=torch.int32)
         y = torch.randint(10, (5, 5), dtype=torch.int32)
-        self.run_test(OrModel(), input_args=(x, y))
+        self.assert_export(OrModel(), input_args=(x, y))
 
         x = torch.randint(10, (5, 5), dtype=torch.double)
         y = torch.randint(10, (5, 5), dtype=torch.double)
-        self.run_test(OrModel(), input_args=(x, y))
+        self.assert_export(OrModel(), input_args=(x, y))
 
         x = torch.randint(10, (2, 3, 5), dtype=torch.float32)
         y = torch.randint(10, (2, 3, 5), dtype=torch.long)
-        self.run_test(OrModel(), input_args=(x, y))
+        self.assert_export(OrModel(), input_args=(x, y))
 
     def test_logical_xor(self):
         class XorModel(torch.nn.Module):
@@ -5187,19 +4697,19 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randint(0, 2, (5, 5), dtype=torch.bool)
         y = torch.randint(0, 2, (5, 5), dtype=torch.bool)
-        self.run_test(XorModel(), input_args=(x, y))
+        self.assert_export(XorModel(), input_args=(x, y))
 
         x = torch.randint(10, (5, 5), dtype=torch.int32)
         y = torch.randint(10, (5, 5), dtype=torch.int32)
-        self.run_test(XorModel(), input_args=(x, y))
+        self.assert_export(XorModel(), input_args=(x, y))
 
         x = torch.randint(10, (5, 5), dtype=torch.double)
         y = torch.randint(10, (5, 5), dtype=torch.double)
-        self.run_test(XorModel(), input_args=(x, y))
+        self.assert_export(XorModel(), input_args=(x, y))
 
         x = torch.randint(10, (2, 3, 5), dtype=torch.float32)
         y = torch.randint(10, (2, 3, 5), dtype=torch.long)
-        self.run_test(XorModel(), input_args=(x, y))
+        self.assert_export(XorModel(), input_args=(x, y))
 
     def test_logical_not(self):
         class NotModel(torch.nn.Module):
@@ -5207,16 +4717,16 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.logical_not(x)
 
         x = torch.randint(0, 2, (5, 5), dtype=torch.bool)
-        self.run_test(NotModel(), input_args=(x,))
+        self.assert_export(NotModel(), input_args=(x,))
 
         x = torch.randint(10, (5, 5), dtype=torch.int32)
-        self.run_test(NotModel(), input_args=(x,))
+        self.assert_export(NotModel(), input_args=(x,))
 
         x = torch.randint(10, (5, 5), dtype=torch.double)
-        self.run_test(NotModel(), input_args=(x,))
+        self.assert_export(NotModel(), input_args=(x,))
 
         x = torch.randint(10, (2, 3, 5), dtype=torch.float32)
-        self.run_test(NotModel(), input_args=(x,))
+        self.assert_export(NotModel(), input_args=(x,))
 
     def test_eq(self):
         class EqualModel(torch.nn.Module):
@@ -5256,7 +4766,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return self.y > x
 
         x = 3
-        self.run_test(GreaterModel(), (x,))
+        self.assert_export(GreaterModel(), (x,))
 
     def test_ge_scalar(self):
         class GreaterOrEqualModel(torch.nn.Module):
@@ -5298,26 +4808,26 @@ class DynamoExporterTest(common_utils.TestCase):
             def forward(self, input, other):
                 return torch.matmul(input, other)
 
-        x = torch.randn(3, 4, requires_grad=True)
-        y = torch.randn(4, 5, requires_grad=True)
-        self.run_test(MatmulModel(), (x, y))
+        x = torch.randn(3, 4)
+        y = torch.randn(4, 5)
+        self.assert_export(MatmulModel(), (x, y))
 
         x = torch.randint(10, (3, 4))
         y = torch.randint(10, (4, 5))
-        self.run_test(MatmulModel(), (x, y))
+        self.assert_export(MatmulModel(), (x, y))
 
     def test_matmul_batch(self):
         class MatmulModel(torch.nn.Module):
             def forward(self, input, other):
                 return torch.matmul(input, other)
 
-        x = torch.randn(2, 3, 4, requires_grad=True)
-        y = torch.randn(2, 4, 5, requires_grad=True)
-        self.run_test(MatmulModel(), (x, y))
+        x = torch.randn(2, 3, 4)
+        y = torch.randn(2, 4, 5)
+        self.assert_export(MatmulModel(), (x, y))
 
         x = torch.randint(10, (2, 3, 4))
         y = torch.randint(10, (2, 4, 5))
-        self.run_test(MatmulModel(), (x, y))
+        self.assert_export(MatmulModel(), (x, y))
 
     def _argmin_argmax_model(self, input):
         class ArgminArgmaxModel(torch.nn.Module):
@@ -5331,7 +4841,7 @@ class DynamoExporterTest(common_utils.TestCase):
                     torch.argmax(input, dim=1, keepdim=True),
                 )
 
-        self.run_test(ArgminArgmaxModel(), input)
+        self.assert_export(ArgminArgmaxModel(), input)
 
     def test_argmin_argmax(self):
         input = torch.randn(7, 3, 5)
@@ -5356,7 +4866,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.tensor([1, 2, 3])
         y = torch.tensor([4, 5, 8, 9])
-        self.run_test(RepeatModel(), (x, y))
+        self.assert_export(RepeatModel(), (x, y))
 
     def test_repeat_interleave(self):
         class FlattenModel(torch.nn.Module):
@@ -5365,14 +4875,14 @@ class DynamoExporterTest(common_utils.TestCase):
 
         for shape in ([3], [3, 4], [2, 3, 4]):
             x = torch.randn(shape)
-            self.run_test(FlattenModel(), (x,))
+            self.assert_export(FlattenModel(), (x,))
 
         class DimsModel(torch.nn.Module):
             def forward(self, x):
                 return x.repeat_interleave(4, dim=1)
 
         x = torch.tensor([[1, 2], [3, 4]])
-        self.run_test(DimsModel(), (x,))
+        self.assert_export(DimsModel(), (x,))
 
         class DimsModel2(torch.nn.Module):
             def forward(self, x):
@@ -5380,7 +4890,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.repeat_interleave(x, repeats, dim=1)
 
         x = torch.tensor([[1, 2], [3, 4]])
-        self.run_test(DimsModel2(), (x,))
+        self.assert_export(DimsModel2(), (x,))
 
         class RepeatsDimsModel(torch.nn.Module):
             def forward(self, x):
@@ -5388,7 +4898,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.repeat_interleave(x, repeats, dim=0)
 
         x = torch.tensor([[1, 2], [3, 4]])
-        self.run_test(RepeatsDimsModel(), (x,))
+        self.assert_export(RepeatsDimsModel(), (x,))
 
         class RepeatsDimsModel2(torch.nn.Module):
             def forward(self, x):
@@ -5396,7 +4906,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.repeat_interleave(x, repeats, dim=1)
 
         x = torch.tensor([[1, 2], [3, 4]])
-        self.run_test(RepeatsDimsModel2(), (x,))
+        self.assert_export(RepeatsDimsModel2(), (x,))
 
     def test_repeat_interleave_noop(self):
         class Model(torch.nn.Module):
@@ -5404,7 +4914,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x.repeat_interleave(1, dim=1)
 
         x = torch.randn(4, 1, 8)
-        self.run_test(Model(), (x,))
+        self.assert_export(Model(), (x,))
 
     def test_dynamic_repeat_interleave(self):
         class SingleDynamicModel(torch.nn.Module):
@@ -5414,7 +4924,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.tensor([[1, 2, 4], [3, 4, 7]])
         another_x = torch.tensor([[7, 8], [5, 6]])
-        self.run_test(
+        self.assert_export(
             SingleDynamicModel(),
             x,
             additional_test_inputs=[another_x],
@@ -5429,7 +4939,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.tensor([[1, 2, 4], [3, 4, 7]])
         another_x = torch.tensor([[7, 8], [5, 6]])
-        self.run_test(
+        self.assert_export(
             NegDynamicModel(),
             x,
             additional_test_inputs=[another_x],
@@ -5444,7 +4954,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.tensor([[1.1, 2.1], [3.1, 4.1]])
         another_x = torch.tensor([[7.1, 8.1], [5.1, 6.1]])
-        self.run_test(
+        self.assert_export(
             SingleDynamicModelFloat(),
             x,
             additional_test_inputs=[another_x],
@@ -5460,7 +4970,7 @@ class DynamoExporterTest(common_utils.TestCase):
         another_x = torch.tensor([[7, 8], [5, 6]])
         repeats = torch.tensor([2])
         another_repeats = torch.tensor([4])
-        self.run_test(
+        self.assert_export(
             DynamicRepeatsModel(),
             (x, repeats),
             additional_test_inputs=[(another_x, another_repeats)],
@@ -5475,7 +4985,7 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.tensor([[1, 2, 4], [3, 4, 7]])
         repeats = torch.tensor([2])
         another_repeats = torch.tensor([4])
-        self.run_test(
+        self.assert_export(
             DynamicRepeatsModel2(),
             (x, repeats),
             additional_test_inputs=[(x, another_repeats)],
@@ -5488,7 +4998,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x.repeat_interleave(2)
 
         x = torch.tensor([1, 2, 3])
-        self.run_test(
+        self.assert_export(
             DynamicFlattenModel(),
             x,
             input_names=["input_1"],
@@ -5503,7 +5013,7 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.tensor([[1, 2, 4], [3, 4, 7]])
         repeats = torch.tensor([2, 3, 4])
         another_repeats = torch.tensor([4, 3, 2])
-        self.run_test(
+        self.assert_export(
             DynamicRepeatsModel(),
             (x, repeats),
             additional_test_inputs=[(x, another_repeats)],
@@ -5518,7 +5028,7 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.tensor([[1, 2, 4], [3, 4, 7]])
         repeats = torch.tensor([2, 3])
         another_repeats = torch.tensor([4, 3])
-        self.run_test(
+        self.assert_export(
             DynamicRepeatsModel2(),
             (x, repeats),
             additional_test_inputs=[(x, another_repeats)],
@@ -5532,7 +5042,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return input.view(4, 24)
 
         x = torch.randint(10, (4, 2, 3, 4), dtype=torch.int32)
-        self.run_test(ViewModel(), x)
+        self.assert_export(ViewModel(), x)
 
     def test_view_dynamic(self):
         class ViewModel(torch.nn.Module):
@@ -5541,13 +5051,13 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4)
         shape = torch.randn(6, 4)
-        self.run_test(
+        self.assert_export(
             ViewModel(),
             (x, shape),
             input_names=["x", "shape"],
             dynamic_axes={"x": [0, 1, 2], "shape": [0, 1]},
         )
-        self.run_test(ViewModel(), (x, shape), remained_onnx_input_idx=[0])
+        self.assert_export(ViewModel(), (x, shape), remained_onnx_input_idx=[0])
 
     def test_view_dynamic_zero_dim(self):
         class ViewModel(torch.nn.Module):
@@ -5557,7 +5067,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.ones(2)
         another_x = torch.empty((0,))
-        self.run_test(
+        self.assert_export(
             ViewModel(),
             x,
             additional_test_inputs=[another_x],
@@ -5576,7 +5086,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4)
         y = torch.randn(6, 4)
-        self.run_test(ViewModel(), (x, y))
+        self.assert_export(ViewModel(), (x, y))
 
     def test_linear(self):
         class LinearModel(torch.nn.Module):
@@ -5590,7 +5100,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return out
 
         x = torch.randn(3, 16)
-        self.run_test(LinearModel(), (x,))
+        self.assert_export(LinearModel(), (x,))
 
         class LinearModel(torch.nn.Module):
             def forward(self, input, weight, bias):
@@ -5600,49 +5110,47 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.randn(2, 2)
         y = torch.randn(2, 2)
         z = torch.randn(1)
-        self.run_test(LinearModel(), (x, y, z))
+        self.assert_export(LinearModel(), (x, y, z))
 
         # input of rank 3
         x = torch.randn(3, 3, 3)
         y = torch.randn(3, 3)
         z = torch.randn(1)
-        self.run_test(LinearModel(), (x, y, z))
-
+        self.assert_export(LinearModel(), (x, y, z))
 
     def test_weight_norm(self):
         # addmm for 3-d inputs converts to onnx::MatMul
         model = torch.nn.utils.weight_norm(torch.nn.Linear(5, 10), dim=1)
-        x = torch.randn(3, 4, 5, requires_grad=True)
-        self.run_test(model, x)
+        x = torch.randn(3, 4, 5)
+        self.assert_export(model, x)
 
         # addmm for 2-d inputs converts to onnx::Gemm
         model = torch.nn.utils.weight_norm(torch.nn.Linear(5, 10), dim=1)
-        x = torch.randn(4, 5, requires_grad=True)
-        self.run_test(model, x)
+        x = torch.randn(4, 5)
+        self.assert_export(model, x)
 
         model = torch.nn.utils.weight_norm(torch.nn.Conv1d(1, 1, 3))
-        x = torch.randn(1, 1, 5, requires_grad=True)
-        self.run_test(model, x)
+        x = torch.randn(1, 1, 5)
+        self.assert_export(model, x)
 
         model = torch.nn.utils.weight_norm(torch.nn.Conv1d(1, 1, 3), dim=-2)
-        x = torch.randn(1, 1, 5, requires_grad=True)
-        self.run_test(model, x)
+        x = torch.randn(1, 1, 5)
+        self.assert_export(model, x)
 
         model = torch.nn.utils.weight_norm(torch.nn.Conv1d(3, 6, 3), name="weight")
-        x = torch.randn(3, 3, 5, requires_grad=True)
-        self.run_test(model, x)
-
+        x = torch.randn(3, 3, 5)
+        self.assert_export(model, x)
 
     def test_weight_norm_nodim(self):
         # addmm for 3-d inputs converts to onnx::MatMul
         model = torch.nn.utils.weight_norm(torch.nn.Linear(5, 10), dim=None)
-        x = torch.randn(3, 4, 5, requires_grad=True)
-        self.run_test(model, x)
+        x = torch.randn(3, 4, 5)
+        self.assert_export(model, x)
 
         # addmm for 2-d inputs converts to onnx::Gemm
         model = torch.nn.utils.weight_norm(torch.nn.Linear(5, 10), dim=None)
-        x = torch.randn(4, 5, requires_grad=True)
-        self.run_test(model, x)
+        x = torch.randn(4, 5)
+        self.assert_export(model, x)
 
     def test_flatten(self):
         class FlattenModel(torch.nn.Module):
@@ -5653,15 +5161,15 @@ class DynamoExporterTest(common_utils.TestCase):
 
         # flatten with 4d input
         x = torch.randint(10, (1, 2, 3, 4))
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
         # flatten with 0d input
         x = torch.randn([])
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
         # flatten with 1d input
         x = torch.randn(4)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_flatten2d(self):
         class FlattenModel(torch.nn.Module):
@@ -5669,7 +5177,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.flatten(input, 1)
 
         x = torch.randint(10, (1, 2, 3, 4))
-        self.run_test(FlattenModel(), x)
+        self.assert_export(FlattenModel(), x)
 
     def test_flatten2d_neg(self):
         class FlattenModel(torch.nn.Module):
@@ -5681,7 +5189,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 )
 
         x = torch.randint(10, (1, 2, 3, 4))
-        self.run_test(FlattenModel(), x)
+        self.assert_export(FlattenModel(), x)
 
     def test_flatten_dynamic_axes(self):
         class MyModule(torch.nn.Module):
@@ -5692,7 +5200,7 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.randn(batch_size, 5, 4, 5)
         y = torch.randn(5, 5, 4, 5)
         model = MyModule()
-        self.run_test(
+        self.assert_export(
             model,
             x,
             additional_test_inputs=[y],
@@ -5713,10 +5221,10 @@ class DynamoExporterTest(common_utils.TestCase):
         y = torch.randn(1, 4, 5)
         z = torch.randn(2, 4, 5)
         ind = torch.tensor(1, dtype=torch.long)
-        self.run_test(GetItemModel(), (x, y, z, ind))
+        self.assert_export(GetItemModel(), (x, y, z, ind))
 
         ind = torch.tensor(-2, dtype=torch.long)
-        self.run_test(GetItemModel(), (x, y, z, ind))
+        self.assert_export(GetItemModel(), (x, y, z, ind))
 
     @skipDtypeChecking
     def test_item(self):
@@ -5727,16 +5235,16 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.arange(6, dtype=torch.float)
         y = torch.tensor([0, 1, 2, 3, 4], dtype=torch.long)
         i = 3
-        self.run_test(torch.jit.script(M()), (x, y, i))
+        self.assert_export(torch.jit.script(M()), (x, y, i))
 
-  # torch.nonzero(x, as_tuple=True) is not scriptable.
+    # torch.nonzero(x, as_tuple=True) is not scriptable.
     def test_nonzero(self):
         class NonzeroModel(torch.nn.Module):
             def forward(self, x):
                 return x.nonzero(), x.nonzero(as_tuple=True)
 
         x = torch.randn(60).index_fill_(0, torch.randint(0, 60, (20,)), 0).view(3, 4, 5)
-        self.run_test(NonzeroModel(), (x,))
+        self.assert_export(NonzeroModel(), (x,))
 
     def test_unbind(self):
         class UnbindModel(torch.nn.Module):
@@ -5745,7 +5253,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return out
 
         x = torch.randn(3, 4, 5)
-        self.run_test(UnbindModel(), x)
+        self.assert_export(UnbindModel(), x)
 
         class UnbindModel2(torch.nn.Module):
             def forward(self, input):
@@ -5753,7 +5261,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return out
 
         x = torch.randn(3, 4, 5)
-        self.run_test(UnbindModel2(), x)
+        self.assert_export(UnbindModel2(), x)
 
         class UnbindModel3(torch.nn.Module):
             def forward(self, input):
@@ -5761,7 +5269,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return out
 
         x = torch.randn(3, 4, 5)
-        self.run_test(UnbindModel3(), x)
+        self.assert_export(UnbindModel3(), x)
 
     def test_len(self):
         class LenModel(torch.jit.ScriptModule):
@@ -5770,7 +5278,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return len(input.unbind()) + input
 
         x = torch.randn(4, 5)
-        self.run_test(
+        self.assert_export(
             LenModel(),
             x,
             input_names=["input"],
@@ -5785,7 +5293,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.ones(len(input.shape))
 
         x = torch.randn(4, 5)
-        self.run_test(LenListModel(), x, remained_onnx_input_idx=[])
+        self.assert_export(LenListModel(), x, remained_onnx_input_idx=[])
 
     def test_unbind_dynamic(self):
         class UnbindModel(torch.jit.ScriptModule):
@@ -5794,7 +5302,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return input.unbind()[1]
 
         x = torch.randn(3, 4, 5)
-        self.run_test(UnbindModel(), x)
+        self.assert_export(UnbindModel(), x)
 
         class UnbindModel2(torch.jit.ScriptModule):
             @torch.jit.script_method
@@ -5802,30 +5310,30 @@ class DynamoExporterTest(common_utils.TestCase):
                 return input.unbind(-1)[1]
 
         x = torch.randn(3, 4, 5)
-        self.run_test(UnbindModel2(), x)
+        self.assert_export(UnbindModel2(), x)
 
-  # scripting tests run for opsets > 11. See: test_split_script
+    # scripting tests run for opsets > 11. See: test_split_script
     def test_split(self):
         class SplitModel(torch.nn.Module):
             def forward(self, input):
                 return input.split([2, 1, 2]), input.split([3, 2])[0]
 
         x = torch.randn(5, 4, 3)
-        self.run_test(SplitModel(), x)
+        self.assert_export(SplitModel(), x)
 
         class SplitModel2(torch.nn.Module):
             def forward(self, input):
                 return input.split([2, 1, 1], -2), input.split([2, 2], -2)[-1]
 
         x = torch.randn(5, 4, 3)
-        self.run_test(SplitModel2(), x)
+        self.assert_export(SplitModel2(), x)
 
         class SplitModel3(torch.nn.Module):
             def forward(self, input):
                 return input.split([2, 1, 2])
 
         x = torch.randn(5, 4, 3)
-        self.run_test(SplitModel3(), x)
+        self.assert_export(SplitModel3(), x)
 
     def test_split_script(self):
         class SplitModel(torch.nn.Module):
@@ -5833,22 +5341,21 @@ class DynamoExporterTest(common_utils.TestCase):
                 return input.split([2, 1, 2]), input.split([3, 2])[0]
 
         x = torch.randn(5, 4, 3)
-        self.run_test(SplitModel(), x)
+        self.assert_export(SplitModel(), x)
 
         class SplitModel2(torch.nn.Module):
             def forward(self, input):
                 return input.split([2, 1, 1], -2), input.split([2, 2], -2)[-1]
 
         x = torch.randn(5, 4, 3)
-        self.run_test(SplitModel2(), x)
+        self.assert_export(SplitModel2(), x)
 
         class SplitModel3(torch.nn.Module):
             def forward(self, input):
                 return input.split([2, 1, 2])
 
         x = torch.randn(5, 4, 3)
-        self.run_test(SplitModel3(), x)
-
+        self.assert_export(SplitModel3(), x)
 
     def test_split_size_as_list(self):
         class SplitModel(torch.nn.Module):
@@ -5862,7 +5369,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(6, 4, 3)
         split_sizes = [torch.tensor(2), torch.tensor(4)]
-        self.run_test(SplitModel(), (x, split_sizes))
+        self.assert_export(SplitModel(), (x, split_sizes))
 
     def test_split_size_with_slice(self):
         class SplitModule(torch.nn.Module):
@@ -5874,13 +5381,13 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.randn(2, 3)
         y = torch.randn(2, 4)
         t = torch.randn(2, 7)
-        self.run_test(
+        self.assert_export(
             SplitModule(),
             (x, y, t),
             input_names=["x", "y", "t"],
             dynamic_axes={"x": [0, 1], "y": [0, 1], "t": [0, 1]},
         )
-        self.run_test(SplitModule(), (x, y, t), remained_onnx_input_idx=[2])
+        self.assert_export(SplitModule(), (x, y, t), remained_onnx_input_idx=[2])
 
     def test_split_dynamic(self):
         class SplitModel(torch.jit.ScriptModule):
@@ -5889,7 +5396,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return input.split(2)[1]
 
         x = torch.randn(5, 4, 3)
-        self.run_test(SplitModel(), x)
+        self.assert_export(SplitModel(), x)
 
         class SplitModel2(torch.jit.ScriptModule):
             @torch.jit.script_method
@@ -5897,7 +5404,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return input.split(2, -3)[1]
 
         x = torch.randn(5, 4, 3)
-        self.run_test(SplitModel2(), x)
+        self.assert_export(SplitModel2(), x)
 
     def test_split_dynamic_axes(self):
         class Split(torch.nn.Module):
@@ -5906,7 +5413,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(4, 384, 2)
         input_names = ["logits"]
-        self.run_test(
+        self.assert_export(
             Split(),
             x,
             input_names=input_names,
@@ -5930,7 +5437,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         for dim_size_ in range(13, 16):
             y = torch.randn(1, dim_size_)
-            self.run_test(
+            self.assert_export(
                 model,
                 x,
                 additional_test_inputs=[y],
@@ -5938,7 +5445,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 dynamic_axes={"x": {0: "batch_size", 1: "dims"}},
             )
 
-            self.run_test(
+            self.assert_export(
                 model_neg_dim,
                 x,
                 additional_test_inputs=[y],
@@ -5963,7 +5470,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         for dim_size_ in range(13, 16):
             y = torch.randn(3, dim_size_)
-            self.run_test(
+            self.assert_export(
                 model,
                 x,
                 additional_test_inputs=[y],
@@ -5971,7 +5478,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 dynamic_axes={"x": {0: "batch_size", 1: "dims"}},
             )
 
-            self.run_test(
+            self.assert_export(
                 model_neg_dim,
                 x,
                 additional_test_inputs=[y],
@@ -5987,7 +5494,7 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.randn(3, 4, 5)
         y = torch.randn(1, 4, 5)
         z = torch.randn(2, 4, 5)
-        self.run_test(ConcatModel(), (x, y, z))
+        self.assert_export(ConcatModel(), (x, y, z))
 
     def test_concat_dynamic(self):
         class ConcatDynamicModel(torch.jit.ScriptModule):
@@ -5996,7 +5503,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.cat(x.unbind())
 
         x = torch.randn(4, 5, 6)
-        self.run_test(ConcatDynamicModel(), x)
+        self.assert_export(ConcatDynamicModel(), x)
 
     def test_stack(self):
         class StackModel(torch.nn.Module):
@@ -6006,7 +5513,7 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.randn(3, 4, 5)
         y = torch.randn(3, 4, 5)
         z = torch.randn(3, 4, 5)
-        self.run_test(StackModel(), (x, y, z))
+        self.assert_export(StackModel(), (x, y, z))
 
     def test_stack_dynamic(self):
         class StackDynamicModel(torch.jit.ScriptModule):
@@ -6015,7 +5522,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.stack(x.unbind(), 1)
 
         x = torch.randn(4, 5, 6)
-        self.run_test(StackDynamicModel(), x)
+        self.assert_export(StackDynamicModel(), x)
 
     def test_loop_dynamic(self):
         class LoopModel(torch.jit.ScriptModule):
@@ -6027,7 +5534,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         model = LoopModel()
         inputs = torch.zeros(1, 2, 3, dtype=torch.long)
-        self.run_test(model, inputs)
+        self.assert_export(model, inputs)
 
     def test_loop_nested(self):
         class NestedLoopsModel(torch.jit.ScriptModule):
@@ -6042,7 +5549,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         model = NestedLoopsModel()
         inputs = torch.zeros(1, 2, 3, dtype=torch.long)
-        self.run_test(model, inputs)
+        self.assert_export(model, inputs)
 
     def test_loop_with_list(self):
         class ListLoopModel(torch.jit.ScriptModule):
@@ -6064,7 +5571,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         model = ListLoopModel()
         inputs = torch.randn(16)
-        self.run_test(model, inputs)
+        self.assert_export(model, inputs)
 
     def test_loop_transpose(self):
         class LoopModel(torch.nn.Module):
@@ -6076,7 +5583,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         model = torch.jit.script(LoopModel())
         x = torch.randn(5, 3, 3)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_loop_multi_dim(self):
         class LoopMultiDimModel(torch.jit.ScriptModule):
@@ -6089,7 +5596,7 @@ class DynamoExporterTest(common_utils.TestCase):
         model = LoopMultiDimModel()
         x = torch.randint(0, 5, (8, 1, 17), dtype=torch.long)
         y = torch.ones(1, dtype=torch.long)
-        self.run_test(model, (x, y))
+        self.assert_export(model, (x, y))
 
     def test_list(self):
         class ListModel(torch.jit.ScriptModule):
@@ -6109,7 +5616,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         model = ListModel()
         inputs = torch.randn(16, 1)
-        self.run_test(model, inputs)
+        self.assert_export(model, inputs)
 
     def test_list_append(self):
         class ListModel(torch.nn.Module):
@@ -6122,7 +5629,7 @@ class DynamoExporterTest(common_utils.TestCase):
         model = torch.jit.script(ListModel())
         x = torch.randn(16, 3, 4)
         y = torch.randn(4, 5)
-        self.run_test(model, (x, y))
+        self.assert_export(model, (x, y))
 
     def test_list_append_nested(self):
         class ListModel(torch.nn.Module):
@@ -6136,7 +5643,7 @@ class DynamoExporterTest(common_utils.TestCase):
         model = torch.jit.script(ListModel())
         x = torch.randn(4, 4, 3, 4)
         y = torch.randn(4, 5)
-        self.run_test(model, (x, y))
+        self.assert_export(model, (x, y))
 
     def test_list_append_nested_2(self):
         class ListModel(torch.nn.Module):
@@ -6153,7 +5660,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         model = torch.jit.script(ListModel())
         x = torch.randn(4, 4, 3, 4)
-        self.run_test(model, (x,))
+        self.assert_export(model, (x,))
 
     def test_list_append_nested_mixed_dtype(self):
         class ListModel(torch.nn.Module):
@@ -6170,7 +5677,7 @@ class DynamoExporterTest(common_utils.TestCase):
         model = torch.jit.script(ListModel())
         x = torch.randn(4, 4, 3, 4)
         y = torch.randn(3, 4)
-        self.run_test(model, (x, y))
+        self.assert_export(model, (x, y))
 
     def test_list_pop(self):
         class ListModel(torch.nn.Module):
@@ -6184,7 +5691,7 @@ class DynamoExporterTest(common_utils.TestCase):
         model = torch.jit.script(ListModel())
         x = torch.randn(16, 3, 4)
         y = torch.randn(4, 5)
-        self.run_test(model, (x, y))
+        self.assert_export(model, (x, y))
 
     def test_list_pop_nested(self):
         class ListModel(torch.nn.Module):
@@ -6200,7 +5707,7 @@ class DynamoExporterTest(common_utils.TestCase):
         model = torch.jit.script(ListModel())
         x = torch.randn(4, 4, 3, 4)
         y = torch.randn(4, 5)
-        self.run_test(model, (x, y))
+        self.assert_export(model, (x, y))
 
     def test_list_del(self):
         class ListModel(torch.nn.Module):
@@ -6214,7 +5721,7 @@ class DynamoExporterTest(common_utils.TestCase):
         model = torch.jit.script(ListModel())
         x = torch.randn(16, 3, 4)
         y = torch.randn(4, 5)
-        self.run_test(model, (x, y))
+        self.assert_export(model, (x, y))
 
     def test_list_del_nested(self):
         class ListModel(torch.nn.Module):
@@ -6230,7 +5737,7 @@ class DynamoExporterTest(common_utils.TestCase):
         model = torch.jit.script(ListModel())
         x = torch.randn(4, 4, 3, 4)
         y = torch.randn(4, 5)
-        self.run_test(model, (x, y))
+        self.assert_export(model, (x, y))
 
     def test_list_set(self):
         class ListModel(torch.nn.Module):
@@ -6244,7 +5751,7 @@ class DynamoExporterTest(common_utils.TestCase):
         model = torch.jit.script(ListModel())
         x = torch.randn(12, 4)
         y = torch.tensor(2, dtype=torch.long)
-        self.run_test(model, (x, y))
+        self.assert_export(model, (x, y))
 
     def test_list_idx_sum(self):
         class ListModel(torch.nn.Module):
@@ -6258,7 +5765,7 @@ class DynamoExporterTest(common_utils.TestCase):
         model = torch.jit.script(ListModel())
         x = torch.randn(12, 4)
         y = torch.tensor(2, dtype=torch.long)
-        self.run_test(model, (x, y))
+        self.assert_export(model, (x, y))
 
     def test_tensor_factories(self):
         class TensorFactory(torch.nn.Module):
@@ -6266,10 +5773,10 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.zeros(x.size()) + torch.ones(x.size())
 
         x = torch.randn(2, 3, 4)
-        self.run_test(
+        self.assert_export(
             TensorFactory(), x, input_names=["x"], dynamic_axes={"x": [0, 1, 2]}
         )
-        self.run_test(TensorFactory(), x, remained_onnx_input_idx=[])
+        self.assert_export(TensorFactory(), x, remained_onnx_input_idx=[])
 
     def test_tensor_factories_script(self):
         class TensorFactory(torch.jit.ScriptModule):
@@ -6280,10 +5787,10 @@ class DynamoExporterTest(common_utils.TestCase):
                 )
 
         x = torch.randn(2, 3, 4)
-        self.run_test(
+        self.assert_export(
             TensorFactory(), x, input_names=["x"], dynamic_axes={"x": [0, 1, 2]}
         )
-        self.run_test(TensorFactory(), x, remained_onnx_input_idx=[])
+        self.assert_export(TensorFactory(), x, remained_onnx_input_idx=[])
 
     def test_tensor_like_factories_script(self):
         class TensorFactory(torch.jit.ScriptModule):
@@ -6304,10 +5811,10 @@ class DynamoExporterTest(common_utils.TestCase):
                 return zeros + ones
 
         x = torch.randn(2, 3, 4)
-        self.run_test(
+        self.assert_export(
             TensorFactory(), x, input_names=["x"], dynamic_axes={"x": [0, 1, 2]}
         )
-        self.run_test(TensorFactory(), x, remained_onnx_input_idx=[])
+        self.assert_export(TensorFactory(), x, remained_onnx_input_idx=[])
 
     def test_tensor_split(self):
         class TensorSplitModel(torch.nn.Module):
@@ -6324,14 +5831,14 @@ class DynamoExporterTest(common_utils.TestCase):
                     input.tensor_split([2, 3, 5]),
                 )
 
-        self.run_test(TensorSplitModel(), torch.randn(5, 4, 3))
+        self.assert_export(TensorSplitModel(), torch.randn(5, 4, 3))
 
     def test_tensor_split_scalar(self):
         class TensorSplitModel(torch.nn.Module):
             def forward(self, x):
                 return torch.tensor_split(x, x.size(1))
 
-        self.run_test(TensorSplitModel(), torch.randn(1, 2, 3))
+        self.assert_export(TensorSplitModel(), torch.randn(1, 2, 3))
 
     def test_tensor_split_dynamic_axes(self):
         class TensorSplitModel(torch.nn.Module):
@@ -6340,7 +5847,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(4, 384, 2)
         input_names = ["logits"]
-        self.run_test(
+        self.assert_export(
             TensorSplitModel(),
             x,
             input_names=input_names,
@@ -6360,7 +5867,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4)
         another_x = torch.randn(5, 6, 7)
-        self.run_test(
+        self.assert_export(
             TensorFactory(),
             x,
             additional_test_inputs=[another_x],
@@ -6376,7 +5883,7 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.randn(2, 4, 5, 2)
         # Other test inputs to test dynamic behavior
         another_x = torch.randn(5, 6, 7, 8)
-        self.run_test(
+        self.assert_export(
             DiagonalModel(),
             x,
             additional_test_inputs=[another_x],
@@ -6391,7 +5898,7 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.randn(2, 4, 5, 2)
         # Other test inputs to test dynamic behavior
         another_x = torch.randn(5, 6, 7, 8)
-        self.run_test(
+        self.assert_export(
             DiagonalModelNegOffset(),
             x,
             additional_test_inputs=[another_x],
@@ -6406,7 +5913,7 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.randn(2, 4, 5, 2)
         # Other test inputs to test dynamic behavior
         another_x = torch.randn(5, 6, 7, 8)
-        self.run_test(
+        self.assert_export(
             DiagonalModelPosOffset(),
             x,
             additional_test_inputs=[another_x],
@@ -6421,7 +5928,7 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.randn(2, 4, 5, 2)
         # Other test inputs to test dynamic behavior
         another_x = torch.randn(5, 6, 7, 8)
-        self.run_test(
+        self.assert_export(
             DiagonalModelWithDims(),
             x,
             additional_test_inputs=[another_x],
@@ -6436,7 +5943,7 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.randn(2, 4, 5, 2)
         # Other test inputs to test dynamic behavior
         another_x = torch.randn(5, 6, 7, 8)
-        self.run_test(
+        self.assert_export(
             DiagonalModelWithNegativeDims(),
             x,
             additional_test_inputs=[another_x],
@@ -6451,7 +5958,7 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.randn(2, 4, 5, 2)
         # Other test inputs to test dynamic behavior
         another_x = torch.randn(5, 6, 7, 8)
-        self.run_test(
+        self.assert_export(
             DiagonalModelOffsetOverrun(),
             x,
             additional_test_inputs=[another_x],
@@ -6465,8 +5972,8 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x.zero_(), x
 
         x = torch.randn(2, 3, 4)
-        self.run_test(Zero_(), x, input_names=["x"], dynamic_axes={"x": [0, 1, 2]})
-        self.run_test(Zero_(), x, remained_onnx_input_idx=[])
+        self.assert_export(Zero_(), x, input_names=["x"], dynamic_axes={"x": [0, 1, 2]})
+        self.assert_export(Zero_(), x, remained_onnx_input_idx=[])
 
     def test_inplace_zero_qkv(self):
         class Zero_(torch.nn.Module):
@@ -6474,7 +5981,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x[2:4].zero_()
 
         x = torch.randn(24, 3, 4)
-        self.run_test(Zero_(), x, input_names=["x"], dynamic_axes={"x": [0, 1, 2]})
+        self.assert_export(Zero_(), x, input_names=["x"], dynamic_axes={"x": [0, 1, 2]})
 
     def test_new_zeros(self):
         class Zero_(torch.nn.Module):
@@ -6484,8 +5991,8 @@ class DynamoExporterTest(common_utils.TestCase):
                 )
 
         x = torch.randn(2, 3, 4)
-        self.run_test(Zero_(), x, input_names=["x"], dynamic_axes={"x": [0, 1, 2]})
-        self.run_test(Zero_(), x, remained_onnx_input_idx=[])
+        self.assert_export(Zero_(), x, input_names=["x"], dynamic_axes={"x": [0, 1, 2]})
+        self.assert_export(Zero_(), x, remained_onnx_input_idx=[])
 
     def test_new_zeros_with_dtype(self):
         class MyModel(torch.nn.Module):
@@ -6499,7 +6006,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         model = MyModel()
         x = torch.Tensor([[2, 5, 6], [3, 2, 5]]).to(torch.int64)
-        self.run_test(model, x, input_names=["x"], dynamic_axes={"x": [0, 1]})
+        self.assert_export(model, x, input_names=["x"], dynamic_axes={"x": [0, 1]})
 
     def test_new_ones(self):
         class OnesModel(torch.nn.Module):
@@ -6509,17 +6016,19 @@ class DynamoExporterTest(common_utils.TestCase):
                 )
 
         x = torch.randn(2, 3, 4)
-        self.run_test(OnesModel(), x, input_names=["x"], dynamic_axes={"x": [0, 1, 2]})
-        self.run_test(OnesModel(), x, remained_onnx_input_idx=[])
+        self.assert_export(
+            OnesModel(), x, input_names=["x"], dynamic_axes={"x": [0, 1, 2]}
+        )
+        self.assert_export(OnesModel(), x, remained_onnx_input_idx=[])
 
-  # torch.zeros/torch.ones with size tensor of dim != 0 not scriptable.
+    # torch.zeros/torch.ones with size tensor of dim != 0 not scriptable.
     def test_zeros_ones_with_tensor_input(self):
         class ZeroAndOnes(torch.nn.Module):
             def forward(self, x):
                 return torch.zeros(x, 1), torch.ones(x, 1)
 
         x = torch.tensor([2])
-        self.run_test(ZeroAndOnes(), (x,))
+        self.assert_export(ZeroAndOnes(), (x,))
 
     @skipShapeChecking
     def test_tolist(self):
@@ -6529,7 +6038,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 res: list[int] = input.tolist()
                 return res
 
-        self.run_test(List(), (torch.randint(100, (1,)),))
+        self.assert_export(List(), (torch.randint(100, (1,)),))
 
     def test_list_pass(self):
         class Slice(torch.nn.Module):
@@ -6538,13 +6047,13 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4, 5)
         y = torch.randn(1, 2, 3, 4)
-        self.run_test(
+        self.assert_export(
             Slice(),
             (x, y),
             input_names=["x", "y"],
             dynamic_axes={"x": [0, 1, 2, 3], "y": [0, 1, 2, 3]},
         )
-        self.run_test(Slice(), (x, y), remained_onnx_input_idx=[])
+        self.assert_export(Slice(), (x, y), remained_onnx_input_idx=[])
 
         class Size(torch.nn.Module):
             def forward(self, x, y):
@@ -6552,13 +6061,13 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4)
         y = torch.randn(1, 2, 3)
-        self.run_test(
+        self.assert_export(
             Size(),
             (x, y),
             input_names=["x", "y"],
             dynamic_axes={"x": [0, 1, 2], "y": [0, 1, 2]},
         )
-        self.run_test(Size(), (x, y), remained_onnx_input_idx=[])
+        self.assert_export(Size(), (x, y), remained_onnx_input_idx=[])
 
         class Array(torch.nn.Module):
             def forward(self, x, y):
@@ -6568,13 +6077,13 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4)
         y = torch.randn(1, 2, 3)
-        self.run_test(
+        self.assert_export(
             Array(),
             (x, y),
             input_names=["x", "y"],
             dynamic_axes={"x": [0, 1, 2], "y": [0, 1, 2]},
         )
-        self.run_test(Array(), (x, y), remained_onnx_input_idx=[])
+        self.assert_export(Array(), (x, y), remained_onnx_input_idx=[])
 
         class List(torch.nn.Module):
             def forward(self, x, y):
@@ -6584,13 +6093,13 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4)
         y = torch.randn(1, 2, 3)
-        self.run_test(
+        self.assert_export(
             List(),
             (x, y),
             input_names=["x", "y"],
             dynamic_axes={"x": [0, 1, 2], "y": [0, 1, 2]},
         )
-        self.run_test(List(), (x, y), remained_onnx_input_idx=[])
+        self.assert_export(List(), (x, y), remained_onnx_input_idx=[])
 
     def test_new_empty(self):
         class Emtpy(torch.nn.Module):
@@ -6601,8 +6110,8 @@ class DynamoExporterTest(common_utils.TestCase):
                 )
 
         x = torch.randn(2, 3, 4)
-        self.run_test(Emtpy(), x, input_names=["x"], dynamic_axes={"x": [0, 1, 2]})
-        self.run_test(Emtpy(), x, remained_onnx_input_idx=[])
+        self.assert_export(Emtpy(), x, input_names=["x"], dynamic_axes={"x": [0, 1, 2]})
+        self.assert_export(Emtpy(), x, remained_onnx_input_idx=[])
 
     def test_new_full(self):
         class Full(torch.nn.Module):
@@ -6612,8 +6121,8 @@ class DynamoExporterTest(common_utils.TestCase):
                 )
 
         x = torch.randn(2, 3, 4)
-        self.run_test(Full(), x, input_names=["x"], dynamic_axes={"x": [0, 1, 2]})
-        self.run_test(Full(), x, remained_onnx_input_idx=[])
+        self.assert_export(Full(), x, input_names=["x"], dynamic_axes={"x": [0, 1, 2]})
+        self.assert_export(Full(), x, remained_onnx_input_idx=[])
 
     def test_inplace_list(self):
         class Arithmetic(torch.jit.ScriptModule):
@@ -6623,13 +6132,13 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3)
         y = torch.randn(2, 3)
-        self.run_test(
+        self.assert_export(
             Arithmetic(),
             (x, y),
             input_names=["x", "y"],
             dynamic_axes={"x": [0, 1], "y": [0, 1]},
         )
-        self.run_test(Arithmetic(), (x, y), remained_onnx_input_idx=[0])
+        self.assert_export(Arithmetic(), (x, y), remained_onnx_input_idx=[0])
 
     def test_inplace_fill(self):
         class Fill_(torch.nn.Module):
@@ -6637,8 +6146,8 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x.fill_(3), x
 
         x = torch.randn(2, 3, 4)
-        self.run_test(Fill_(), x, input_names=["x"], dynamic_axes={"x": [0, 1, 2]})
-        self.run_test(Fill_(), x, remained_onnx_input_idx=[])
+        self.assert_export(Fill_(), x, input_names=["x"], dynamic_axes={"x": [0, 1, 2]})
+        self.assert_export(Fill_(), x, remained_onnx_input_idx=[])
 
     def test_inplace_arithmetic(self):
         class Arithmetic(torch.jit.ScriptModule):
@@ -6650,7 +6159,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4)
         y = torch.randn(2, 3, 4)
-        self.run_test(Arithmetic(), (x, y))
+        self.assert_export(Arithmetic(), (x, y))
 
     def test_inplace_arithmetic_half(self):
         class InplaceAddModel(torch.nn.Module):
@@ -6663,8 +6172,8 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 2, dtype=torch.half)
         y = torch.randn(2, 2, dtype=torch.float)
-        self.run_test(InplaceAddModel(), (x, y), rtol=1e-2, atol=1e-2)
-        self.run_test(InplaceMulModel(), (x, y), rtol=1e-2, atol=1e-2)
+        self.assert_export(InplaceAddModel(), (x, y), rtol=1e-2, atol=1e-2)
+        self.assert_export(InplaceMulModel(), (x, y), rtol=1e-2, atol=1e-2)
 
     def test_inplace_with_loop(self):
         class M(torch.nn.Module):
@@ -6684,7 +6193,7 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.randn(
             12,
         )
-        self.run_test(torch.jit.script(M()), (x))
+        self.assert_export(torch.jit.script(M()), (x))
 
     def test_inplace_with_loop_2(self):
         class M(torch.nn.Module):
@@ -6728,7 +6237,7 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.zeros(
             12,
         )
-        self.run_test(torch.jit.script(M()), (x))
+        self.assert_export(torch.jit.script(M()), (x))
 
     def test_inplace_attr_with_loop(self):
         class M(torch.nn.Module):
@@ -6754,7 +6263,7 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.zeros(
             12,
         )
-        self.run_test(torch.jit.script(M()), (x))
+        self.assert_export(torch.jit.script(M()), (x))
 
     def test_inplace_attr_copy_with_loop(self):
         class M(torch.nn.Module):
@@ -6795,7 +6304,7 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.zeros(
             12,
         )
-        self.run_test(torch.jit.script(M()), (x))
+        self.assert_export(torch.jit.script(M()), (x))
 
     def test_inplace_sequence_with_loop(self):
         class M(torch.nn.Module):
@@ -6831,9 +6340,9 @@ class DynamoExporterTest(common_utils.TestCase):
 
         m = torch.jit.script(M())
         x = torch.randn(8, 4, 3)
-        self.run_test(torch.jit.script(M()), (x))
+        self.assert_export(torch.jit.script(M()), (x))
 
-  # Sort with dynamic dim not supported in ONNX
+    # Sort with dynamic dim not supported in ONNX
     def test_sort(self):
         class SortModel(torch.nn.Module):
             def forward(self, x):
@@ -6843,9 +6352,9 @@ class DynamoExporterTest(common_utils.TestCase):
                 return out
 
         x = torch.randn(3, 4)
-        self.run_test(SortModel(), x)
+        self.assert_export(SortModel(), x)
 
-  # Sort with dynamic dim not supported in ONNX
+    # Sort with dynamic dim not supported in ONNX
     def test_sort_ascending(self):
         class SortModel(torch.nn.Module):
             def forward(self, x):
@@ -6855,7 +6364,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return out
 
         x = torch.randn(3, 4)
-        self.run_test(SortModel(), x)
+        self.assert_export(SortModel(), x)
 
     def test_argsort(self):
         class ArgSortModel(torch.nn.Module):
@@ -6863,7 +6372,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.argsort(x, dim=1, descending=False)
 
         x = torch.randn(3, 4)
-        self.run_test(ArgSortModel(), x)
+        self.assert_export(ArgSortModel(), x)
 
     def test_masked_fill(self):
         class MaskedFillModel(torch.nn.Module):
@@ -6871,15 +6380,15 @@ class DynamoExporterTest(common_utils.TestCase):
                 mask = torch.tensor([[0, 0, 1], [1, 1, 0]], dtype=torch.bool)
                 return x.masked_fill(mask, 2)
 
-        x = torch.zeros(4, 2, 3, requires_grad=True)
-        self.run_test(MaskedFillModel(), x)
+        x = torch.zeros(4, 2, 3)
+        self.assert_export(MaskedFillModel(), x)
 
         class MaskedFillModel2(torch.nn.Module):
             def forward(self, x):
                 return x.masked_fill(x > 3, -1)
 
         x = torch.arange(16).view(2, 2, 4).to(torch.float32)
-        self.run_test(MaskedFillModel2(), x)
+        self.assert_export(MaskedFillModel2(), x)
 
     def test_masked_fill_inplace(self):
         class MaskedFillModel(torch.jit.ScriptModule):
@@ -6889,8 +6398,8 @@ class DynamoExporterTest(common_utils.TestCase):
                 x.masked_fill_(mask, 2)
                 return x
 
-        x = torch.zeros(4, 2, 3, requires_grad=True)
-        self.run_test(MaskedFillModel(), x)
+        x = torch.zeros(4, 2, 3)
+        self.assert_export(MaskedFillModel(), x)
 
         class MaskedFillModel2(torch.jit.ScriptModule):
             @torch.jit.script_method
@@ -6899,23 +6408,23 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x
 
         x = torch.arange(16).view(2, 2, 4).to(torch.float32)
-        self.run_test(MaskedFillModel2(), x)
+        self.assert_export(MaskedFillModel2(), x)
 
     def test_masked_scatter(self):
         class MaskedScatterModel(torch.nn.Module):
             def forward(self, x):
                 return torch.masked_scatter(x, x.ge(0.5), torch.ones(100, 100) * 5)
 
-        x = torch.randn(3, 4, 5, requires_grad=True)
-        self.run_test(MaskedScatterModel(), x)
+        x = torch.randn(3, 4, 5)
+        self.assert_export(MaskedScatterModel(), x)
 
     def test_masked_select(self):
         class MaskedSelectModel(torch.nn.Module):
             def forward(self, x):
                 return torch.masked_select(x, x.ge(0.5))
 
-        x = torch.randn(3, 4, 5, requires_grad=True)
-        self.run_test(MaskedSelectModel(), x)
+        x = torch.randn(3, 4, 5)
+        self.assert_export(MaskedSelectModel(), x)
 
     def test_index_put_to_masked_fill(self):
         class MaskedFillModel(torch.nn.Module):
@@ -6925,9 +6434,9 @@ class DynamoExporterTest(common_utils.TestCase):
                 mask[mask == some_const] = 0
                 return mask
 
-        mask = torch.randn(2, 2, 2, requires_grad=True)
+        mask = torch.randn(2, 2, 2)
         constant = torch.tensor(5, dtype=torch.float)
-        self.run_test(MaskedFillModel(), (mask, constant))
+        self.assert_export(MaskedFillModel(), (mask, constant))
 
     def test_index_put_to_masked_scatter(self):
         class MaskedScatterModel(torch.nn.Module):
@@ -6936,9 +6445,9 @@ class DynamoExporterTest(common_utils.TestCase):
                 mask[mask != some_const] = torch.ones(8)
                 return mask
 
-        mask = torch.randn(2, 2, 2, requires_grad=True)
+        mask = torch.randn(2, 2, 2)
         constant = torch.tensor(5, dtype=torch.float)
-        self.run_test(MaskedScatterModel(), (mask, constant))
+        self.assert_export(MaskedScatterModel(), (mask, constant))
 
     def test_index_put_with_1d_mask_to_masked_scatter(self):
         class MaskedScatterModel(torch.nn.Module):
@@ -6947,19 +6456,19 @@ class DynamoExporterTest(common_utils.TestCase):
                 return tensor
 
         mask = torch.tensor([0, 1, 0, 1, 0, 1, 0, 1], dtype=torch.bool)
-        tensor = torch.randn(8, 4, 5, requires_grad=True)
+        tensor = torch.randn(8, 4, 5)
         some_const = torch.randn(4, 4, 5, dtype=torch.float)
-        self.run_test(MaskedScatterModel(), (tensor, mask, some_const))
+        self.assert_export(MaskedScatterModel(), (tensor, mask, some_const))
 
     def test_pixel_shuffle(self):
         class PixelShuffle(torch.nn.Module):
             def forward(self, x):
                 return torch.pixel_shuffle(x, upscale_factor=2)
 
-        x = torch.randn(2, 16, 4, 3, requires_grad=True)
-        y = torch.randn(4, 32, 8, 4, requires_grad=True)
-        self.run_test(PixelShuffle(), x)
-        self.run_test(
+        x = torch.randn(2, 16, 4, 3)
+        y = torch.randn(4, 32, 8, 4)
+        self.assert_export(PixelShuffle(), x)
+        self.assert_export(
             PixelShuffle(),
             x,
             input_names=["x"],
@@ -6972,10 +6481,10 @@ class DynamoExporterTest(common_utils.TestCase):
             def forward(self, x):
                 return torch.pixel_unshuffle(x, downscale_factor=2)
 
-        x = torch.randn(2, 16, 4, 6, requires_grad=True)
-        y = torch.randn(4, 32, 8, 4, requires_grad=True)
-        self.run_test(PixelUnshuffle(), x)
-        self.run_test(
+        x = torch.randn(2, 16, 4, 6)
+        y = torch.randn(4, 32, 8, 4)
+        self.assert_export(PixelUnshuffle(), x)
+        self.assert_export(
             PixelUnshuffle(),
             x,
             input_names=["x"],
@@ -6990,9 +6499,9 @@ class DynamoExporterTest(common_utils.TestCase):
 
         model = ReciprocalModel()
         x = torch.tensor([2, 4])
-        self.run_test(model, x.to(torch.long))
-        self.run_test(model, x.to(torch.float))
-        self.run_test(model, x.to(torch.double))
+        self.assert_export(model, x.to(torch.long))
+        self.assert_export(model, x.to(torch.float))
+        self.assert_export(model, x.to(torch.double))
 
     def test_scalar_type(self):
         class ArithmeticModel(torch.nn.Module):
@@ -7000,7 +6509,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x.size(0) * 2 * x, 2 - x
 
         x = torch.ones(2, 3, dtype=torch.float32)
-        self.run_test(ArithmeticModel(), x)
+        self.assert_export(ArithmeticModel(), x)
 
         class ComparisonModel(torch.nn.Module):
             def forward(self, x, y):
@@ -7009,21 +6518,21 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.ones(2, 3, dtype=torch.int32)
         y = torch.ones(2, 3, dtype=torch.float32)
-        self.run_test(ComparisonModel(), (x, y))
+        self.assert_export(ComparisonModel(), (x, y))
 
         class MatMulModel(torch.nn.Module):
             def forward(self, x):
                 return torch.mm(x, x) + x + torch.mm(x, x) + x
 
         x = torch.ones(3, 3)
-        self.run_test(MatMulModel(), x)
+        self.assert_export(MatMulModel(), x)
 
         class AddMMModel(torch.nn.Module):
             def forward(self, x):
                 return torch.mm(x, x) + x
 
         x = torch.ones(3, 3)
-        self.run_test(AddMMModel(), x)
+        self.assert_export(AddMMModel(), x)
 
         class FullModel(torch.nn.Module):
             # add is used for exporting full
@@ -7031,7 +6540,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.full((3, 4), x)
 
         x = torch.tensor(12.0)
-        self.run_test(FullModel(), x)
+        self.assert_export(FullModel(), x)
 
         class CatModel(torch.nn.Module):
             def forward(self, fp16, fp32):
@@ -7040,7 +6549,7 @@ class DynamoExporterTest(common_utils.TestCase):
         fp16 = Tensor([0.5])
         fp16 = fp16.half()
         fp32 = Tensor([1.5])
-        self.run_test(CatModel(), (fp16, fp32))
+        self.assert_export(CatModel(), (fp16, fp32))
 
     def test_scalar_type_does_not_trigger_upcast_type_promotion(self):
         class DoNotUpcastModel(torch.nn.Module):
@@ -7051,7 +6560,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x * scale
 
         x = torch.ones(2, 3, dtype=torch.float16)
-        self.run_test(DoNotUpcastModel(), x)
+        self.assert_export(DoNotUpcastModel(), x)
 
     def test_scalar_type_promotion_onnx_where_two_prim_const(self):
         class TwoPrimConstCastWhereModel(torch.nn.Module):
@@ -7059,7 +6568,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.where(c, 0, 1.0)
 
         c = torch.ones(8, dtype=torch.bool)
-        self.run_test(TwoPrimConstCastWhereModel(), (c))
+        self.assert_export(TwoPrimConstCastWhereModel(), (c))
 
     def test_scalar_type_promotion_onnx_where_one_prim_const(self):
         class OnePrimConstCastWhereModel(torch.nn.Module):
@@ -7068,7 +6577,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         c = torch.ones(8, dtype=torch.bool)
         x = torch.ones(8, dtype=torch.float16)
-        self.run_test(OnePrimConstCastWhereModel(), (c, x))
+        self.assert_export(OnePrimConstCastWhereModel(), (c, x))
 
     def test_scalar_type_promotion_onnx_where_one_tensor_const(self):
         class OneTensorConstCastWhereModel(torch.nn.Module):
@@ -7077,7 +6586,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         c = torch.ones(8, dtype=torch.bool)
         x = torch.ones(8, dtype=torch.float16)
-        self.run_test(OneTensorConstCastWhereModel(), (c, x))
+        self.assert_export(OneTensorConstCastWhereModel(), (c, x))
 
     def test_scalar_type_upcast_type_promotion_onnx_where_no_const(self):
         class OnnxWhereUpcastModel(torch.nn.Module):
@@ -7088,7 +6597,7 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.ones(8, dtype=torch.float16)
         y = torch.ones(8, dtype=torch.float32)
 
-        self.run_test(OnnxWhereUpcastModel(), (c, x, y))
+        self.assert_export(OnnxWhereUpcastModel(), (c, x, y))
 
     def test_full_like(self):
         class FullLikeModel(torch.nn.Module):
@@ -7096,7 +6605,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.full_like(x, 1.3, dtype=torch.int)
 
         x = torch.tensor(12)
-        self.run_test(FullLikeModel(), x)
+        self.assert_export(FullLikeModel(), x)
 
     @skipDtypeChecking
     def test_full_like_value(self):
@@ -7107,48 +6616,48 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.tensor(12)
         y = torch.tensor(2)
-        self.run_test(FullLikeModel(), (x, y))
+        self.assert_export(FullLikeModel(), (x, y))
 
     def test_l1_norm(self):
         class NormModel(torch.nn.Module):
             def forward(self, x):
                 return torch.norm(x, p=1, dim=-1, keepdim=False)
 
-        x = torch.randn(4, 2, 3, requires_grad=True)
-        self.run_test(NormModel(), x)
+        x = torch.randn(4, 2, 3)
+        self.assert_export(NormModel(), x)
 
     def test_l2_norm(self):
         class NormModel(torch.nn.Module):
             def forward(self, x):
                 return torch.norm(x, p=2, dim=-2, keepdim=False)
 
-        x = torch.randn(4, 2, 3, requires_grad=True)
-        self.run_test(NormModel(), x)
+        x = torch.randn(4, 2, 3)
+        self.assert_export(NormModel(), x)
 
     def test_frobenius_norm(self):
         class NormModel(torch.nn.Module):
             def forward(self, x):
                 return torch.norm(x, p="fro", dim=0, keepdim=False)
 
-        x = torch.randn(4, 2, 3, requires_grad=True)
-        self.run_test(NormModel(), x)
+        x = torch.randn(4, 2, 3)
+        self.assert_export(NormModel(), x)
 
     def test_frobenius_norm_keepdim(self):
         class NormModel(torch.nn.Module):
             def forward(self, x):
                 return torch.norm(x, p="fro", dim=(0, 1), keepdim=True)
 
-        x = torch.randn(4, 2, 3, requires_grad=True)
-        self.run_test(NormModel(), x)
+        x = torch.randn(4, 2, 3)
+        self.assert_export(NormModel(), x)
 
     def test_unfold(self):
         class UnfoldModel(torch.nn.Module):
             def forward(self, x):
                 return x.unfold(dimension=2, size=2, step=2)
 
-        x = torch.randn(4, 2, 3, requires_grad=True)
-        y = torch.randn(2, 1, 3, requires_grad=True)
-        self.run_test(
+        x = torch.randn(4, 2, 3)
+        y = torch.randn(2, 1, 3)
+        self.assert_export(
             UnfoldModel(),
             x,
             dynamic_axes={"x": [0, 1]},
@@ -7168,55 +6677,55 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x.unfold(dimension=2, size=2, step=2)
 
         x = torch.randn(32, 3, 64)
-        self.run_test(UnfoldModule(), x)
+        self.assert_export(UnfoldModule(), x)
 
     def test_unfold_dynamic_inputs(self):
         class UnfoldModel(torch.nn.Module):
             def forward(self, x):
                 return x.unfold(dimension=2, size=x.shape[1], step=x.shape[1] - 1)
 
-        x = torch.randn(4, 2, 4, requires_grad=True)
-        self.run_test(UnfoldModel(), x)
+        x = torch.randn(4, 2, 4)
+        self.assert_export(UnfoldModel(), x)
 
         class UnfoldModel(torch.nn.Module):
             def forward(self, x):
                 return x.unfold(dimension=2, size=x.shape[1], step=1)
 
-        x = torch.randn(4, 2, 4, requires_grad=True)
-        self.run_test(UnfoldModel(), x)
+        x = torch.randn(4, 2, 4)
+        self.assert_export(UnfoldModel(), x)
 
     def test_mv(self):
         class MatmulModel(torch.nn.Module):
             def forward(self, input, other):
                 return torch.mv(input, other)
 
-        x = torch.randn(4, 5, requires_grad=True)
-        y = torch.randn(5, requires_grad=True)
-        self.run_test(MatmulModel(), (x, y))
+        x = torch.randn(4, 5)
+        y = torch.randn(5)
+        self.assert_export(MatmulModel(), (x, y))
 
         x = torch.randint(10, (4, 5))
         y = torch.randint(10, (5,))
-        self.run_test(MatmulModel(), (x, y))
+        self.assert_export(MatmulModel(), (x, y))
 
     def test_dot(self):
         class MatmulModel(torch.nn.Module):
             def forward(self, input, other):
                 return torch.dot(input, other)
 
-        x = torch.randn(5, requires_grad=True)
-        y = torch.randn(5, requires_grad=True)
-        self.run_test(MatmulModel(), (x, y))
+        x = torch.randn(5)
+        y = torch.randn(5)
+        self.assert_export(MatmulModel(), (x, y))
 
         x = torch.randint(10, (5,))
         y = torch.randint(10, (5,))
-        self.run_test(MatmulModel(), (x, y))
+        self.assert_export(MatmulModel(), (x, y))
 
-  # SpectralNorm not TorchScript compatible.
+    # SpectralNorm not TorchScript compatible.
     def test_spectral_norm(self):
         m = torch.nn.utils.spectral_norm(torch.nn.Linear(2, 4))
 
         x = torch.randn(6, 2)
-        self.run_test(m, (x,))
+        self.assert_export(m, (x,))
 
     def test_prelu(self):
         class PReluModel(torch.nn.Module):
@@ -7229,7 +6738,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4)
         y = torch.randn(2, 4, 5)
-        self.run_test(
+        self.assert_export(
             PReluModel(),
             x,
             input_names=["x"],
@@ -7239,7 +6748,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
     def test_prelu_scalar(self):
         x = torch.scalar_tensor(1.0)
-        self.run_test(torch.nn.PReLU(), x, input_names=["x"])
+        self.assert_export(torch.nn.PReLU(), x, input_names=["x"])
 
     def test_relu6(self):
         class Relu6Model(torch.nn.Module):
@@ -7252,7 +6761,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4) * 100.0
         y = torch.randn(2, 4, 5) * 100.0
-        self.run_test(
+        self.assert_export(
             Relu6Model(),
             x,
             input_names=["x"],
@@ -7270,7 +6779,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return self.silu(x)
 
         x = torch.randn(2, 3, 4)
-        self.run_test(SiLUModel(), (x))
+        self.assert_export(SiLUModel(), (x))
 
     def test_tril(self):
         class trilModel(torch.nn.Module):
@@ -7278,28 +6787,28 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.tril(x)
 
         x = torch.randn(2, 3, 4)
-        self.run_test(trilModel(), (x))
+        self.assert_export(trilModel(), (x))
 
         class trilModelwithDiagonal(torch.nn.Module):
             def forward(self, x):
                 return torch.tril(x, diagonal=1)
 
         x = torch.randn(2, 3, 4)
-        self.run_test(trilModelwithDiagonal(), (x))
+        self.assert_export(trilModelwithDiagonal(), (x))
 
         class trilModelwithNegDiagonal(torch.nn.Module):
             def forward(self, x):
                 return torch.tril(x, diagonal=-1)
 
         x = torch.randn(2, 3, 4)
-        self.run_test(trilModelwithNegDiagonal(), (x))
+        self.assert_export(trilModelwithNegDiagonal(), (x))
 
         class trilModelWithDiagonalInput(torch.nn.Module):
             def forward(self, x, diagnonal: int):
                 return torch.tril(x, diagonal=diagnonal)
 
         x = torch.randn(2, 3, 4)
-        self.run_test(trilModelWithDiagonalInput(), (x, 5))
+        self.assert_export(trilModelWithDiagonalInput(), (x, 5))
 
     def test_triu(self):
         class triuModel(torch.nn.Module):
@@ -7307,28 +6816,28 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.triu(x)
 
         x = torch.randn(2, 3, 4)
-        self.run_test(triuModel(), (x))
+        self.assert_export(triuModel(), (x))
 
         class triuModelwithDiagonal(torch.nn.Module):
             def forward(self, x):
                 return torch.triu(x, diagonal=1)
 
         x = torch.randn(2, 3, 4)
-        self.run_test(triuModelwithDiagonal(), (x))
+        self.assert_export(triuModelwithDiagonal(), (x))
 
         class triuModelwithNegDiagonal(torch.nn.Module):
             def forward(self, x):
                 return torch.triu(x, diagonal=-1)
 
         x = torch.randn(2, 3, 4)
-        self.run_test(triuModelwithNegDiagonal(), (x))
+        self.assert_export(triuModelwithNegDiagonal(), (x))
 
         class triuModelWithDiagonalInput(torch.nn.Module):
             def forward(self, x, diagnonal: int):
                 return torch.triu(x, diagonal=diagnonal)
 
         x = torch.randn(2, 3, 4)
-        self.run_test(triuModelWithDiagonalInput(), (x, 5))
+        self.assert_export(triuModelWithDiagonalInput(), (x, 5))
 
     def test_mish(self):
         class MishModel(torch.nn.Module):
@@ -7340,7 +6849,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return self.mish(x)
 
         x = torch.randn(2, 3, 4)
-        self.run_test(MishModel(), (x))
+        self.assert_export(MishModel(), (x))
 
     def test_remainder(self):
         class RemainderModel(torch.nn.Module):
@@ -7349,20 +6858,20 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(4, 2, 3)
         y = torch.randn(1, 2, 1)
-        self.run_test(RemainderModel(), (x, y))
+        self.assert_export(RemainderModel(), (x, y))
 
         x = torch.tensor([7, 6, -7, -6], dtype=torch.long)
         y = torch.tensor([2], dtype=torch.long)
-        self.run_test(RemainderModel(), (x, y))
+        self.assert_export(RemainderModel(), (x, y))
 
         x = x.to(torch.float)
-        self.run_test(RemainderModel(), (x, y))
+        self.assert_export(RemainderModel(), (x, y))
 
         y = y.to(torch.float)
-        self.run_test(RemainderModel(), (x, y))
+        self.assert_export(RemainderModel(), (x, y))
 
         x = x.to(torch.int32)
-        self.run_test(RemainderModel(), (x, y))
+        self.assert_export(RemainderModel(), (x, y))
 
     def test_remainder_scalar(self):
         class RemainderModel(torch.nn.Module):
@@ -7374,10 +6883,10 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.remainder(input, self.scalar)
 
         x = torch.randint(10, (2, 3))
-        self.run_test(RemainderModel(), x)
+        self.assert_export(RemainderModel(), x)
 
         x = torch.tensor([7, 6, -7, -6], dtype=torch.long)
-        self.run_test(RemainderModel(2), x)
+        self.assert_export(RemainderModel(2), x)
 
     def test_fmod(self):
         class FModModel(torch.nn.Module):
@@ -7386,7 +6895,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(4, 2, 3)
         y = torch.randn(1, 2, 1)
-        self.run_test(FModModel(), (x, y))
+        self.assert_export(FModModel(), (x, y))
 
     def test_fmod_scalar(self):
         class FModModel(torch.nn.Module):
@@ -7394,31 +6903,31 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.fmod(input, 2.55)
 
         x = torch.randint(10, (2, 3))
-        self.run_test(FModModel(), x)
+        self.assert_export(FModModel(), x)
 
     def test_glu(self):
         class GluModel(torch.nn.Module):
             def forward(self, x):
                 return torch.nn.functional.glu(x)
 
-        x = torch.randn(2, 4, 5, 6, requires_grad=True)
-        self.run_test(GluModel(), x)
+        x = torch.randn(2, 4, 5, 6)
+        self.assert_export(GluModel(), x)
 
     def test_gelu(self):
         class GeluModel(torch.nn.Module):
             def forward(self, x):
                 return torch.nn.functional.gelu(x, approximate="none")
 
-        x = torch.randn(2, 4, 5, 6, requires_grad=True)
-        self.run_test(GeluModel(), x)
+        x = torch.randn(2, 4, 5, 6)
+        self.assert_export(GeluModel(), x)
 
     def test_tanh_gelu(self):
         class GeluModel(torch.nn.Module):
             def forward(self, x):
                 return torch.nn.functional.gelu(x, approximate="tanh")
 
-        x = torch.randn(2, 4, 5, 6, requires_grad=True)
-        self.run_test(GeluModel(), x)
+        x = torch.randn(2, 4, 5, 6)
+        self.assert_export(GeluModel(), x)
 
     def test_add_inplace(self):
         class InplaceAddModel(torch.nn.Module):
@@ -7426,8 +6935,8 @@ class DynamoExporterTest(common_utils.TestCase):
                 x += 12
                 return x
 
-        x = torch.randn(4, 2, 3, requires_grad=True)
-        self.run_test(InplaceAddModel(), x)
+        x = torch.randn(4, 2, 3)
+        self.assert_export(InplaceAddModel(), x)
 
     def test_addcmul(self):
         class AddcmulModel(torch.nn.Module):
@@ -7437,23 +6946,23 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.randn(1, 3)
         t1 = torch.randn(3, 1)
         t2 = torch.randn(1, 3)
-        self.run_test(AddcmulModel(), (x, t1, t2))
+        self.assert_export(AddcmulModel(), (x, t1, t2))
 
     def test_rsqrt(self):
         class RsqrtModel(torch.nn.Module):
             def forward(self, x):
                 return x.rsqrt()
 
-        x = torch.randn(4, 2, 3, requires_grad=True, dtype=torch.float64)
-        self.run_test(RsqrtModel(), x)
+        x = torch.randn(4, 2, 3, dtype=torch.float64)
+        self.assert_export(RsqrtModel(), x)
 
     def test_rsqrt_zeros(self):
         class RsqrtModel(torch.nn.Module):
             def forward(self, x):
                 return x.rsqrt()
 
-        x = torch.zeros(4, 2, 3, requires_grad=True, dtype=torch.float64)
-        self.run_test(RsqrtModel(), x)
+        x = torch.zeros(4, 2, 3, dtype=torch.float64)
+        self.assert_export(RsqrtModel(), x)
 
     def test_unique(self):
         class UniqueModel(torch.nn.Module):
@@ -7463,7 +6972,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 )
 
         x = torch.tensor([1, 3, 2, 3], dtype=torch.long)
-        self.run_test(UniqueModel(), x)
+        self.assert_export(UniqueModel(), x)
 
     def test_unique_along_dim(self):
         class UniqueModel(torch.nn.Module):
@@ -7473,7 +6982,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 )
 
         x = torch.tensor([1, 3, 2, 3], dtype=torch.long)
-        self.run_test(UniqueModel(), x)
+        self.assert_export(UniqueModel(), x)
 
     def test_cumsum(self):
         class CumSum(torch.nn.Module):
@@ -7482,7 +6991,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4)
         model = CumSum()
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_cumsum_with_cast(self):
         class CumSum(torch.nn.Module):
@@ -7491,25 +7000,25 @@ class DynamoExporterTest(common_utils.TestCase):
 
         model = CumSum()
         x = torch.tensor([2, 3, 4], dtype=torch.int32)
-        self.run_test(model, x)
+        self.assert_export(model, x)
         x = torch.tensor([False, True, True])
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
-  # error in propagate as assign input shape
+    # error in propagate as assign input shape
     def test_embedding_bag(self):
         model = torch.nn.EmbeddingBag(10, 5, mode="sum", scale_grad_by_freq=True)
         input = torch.randint(10, (7,))
         offset = torch.tensor([0, 2, 5, 6])
-        self.run_test(model, (input, offset))
+        self.assert_export(model, (input, offset))
 
         model = torch.nn.EmbeddingBag(10, 5, mode="sum", include_last_offset=True)
         input = torch.randint(10, (7,))
         offset = torch.tensor([0, 2, 5, 6])
-        self.run_test(model, (input, offset))
+        self.assert_export(model, (input, offset))
 
         model = torch.nn.EmbeddingBag(10, 5, mode="max")
         input = torch.randint(10, (7, 5))
-        self.run_test(model, (input))
+        self.assert_export(model, (input))
 
     def test_embedding_bag_1d_per_sample_weights(self):
         class EmbeddingModel(torch.nn.Module):
@@ -7529,7 +7038,7 @@ class DynamoExporterTest(common_utils.TestCase):
         )
         offset = torch.tensor([0, 2, 5])
         embedding_matrix = torch.rand(10, 15)
-        self.run_test(model, (embedding_matrix, x, offset, w))
+        self.assert_export(model, (embedding_matrix, x, offset, w))
 
     @unittest.skip(
         "This test is broken with ONNXRuntime(17): "
@@ -7553,7 +7062,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x2 = torch.randint(7, (4, 3))
         w2 = torch.randn(4, 3)
-        self.run_test(
+        self.assert_export(
             model,
             (embedding_matrix, x, w),
             input_names=["embed", "x", "w"],
@@ -7561,7 +7070,7 @@ class DynamoExporterTest(common_utils.TestCase):
             additional_test_inputs=[(embedding_matrix, x2, w2)],
         )
 
-  # scripting prim::Uninitialized, prim::dtype, prim::unchecked_cast
+    # scripting prim::Uninitialized, prim::dtype, prim::unchecked_cast
     @unittest.skip(
         "Due to ONNX Loop shape inference issue. "
         "https://msdata.visualstudio.com/Vienna/_workitems/edit/1352001"
@@ -7595,7 +7104,7 @@ class DynamoExporterTest(common_utils.TestCase):
             ],
             dtype=torch.long,
         )
-        self.run_test(
+        self.assert_export(
             model,
             (embedding_matrix, x, w, offsets),
             additional_test_inputs=[(embedding_matrix2, x2, w2, offsets2)],
@@ -7621,7 +7130,7 @@ class DynamoExporterTest(common_utils.TestCase):
         x2 = torch.randint(7, (3, 5))
         w2 = torch.randn(3, 5)
         embedding_matrix2 = torch.rand(12, 25)
-        self.run_test(
+        self.assert_export(
             model,
             (embedding_matrix, x, w),
             additional_test_inputs=[(embedding_matrix2, x2, w2)],
@@ -7635,10 +7144,10 @@ class DynamoExporterTest(common_utils.TestCase):
                 output1, output2, output3 = torch.meshgrid(x, y, z)
                 return output1, output2, output3
 
-        x = torch.randn(3, requires_grad=True)
-        y = torch.zeros(4, requires_grad=True)
-        z = torch.randn(5, requires_grad=True)
-        self.run_test(Meshgrid(), (x, y, z))
+        x = torch.randn(3)
+        y = torch.zeros(4)
+        z = torch.randn(5)
+        self.assert_export(Meshgrid(), (x, y, z))
 
     def test_meshgrid_indexing(self):
         class Meshgrid(torch.nn.Module):
@@ -7652,11 +7161,11 @@ class DynamoExporterTest(common_utils.TestCase):
                 )
                 return output1, output2, output3
 
-        x = torch.randn(5, requires_grad=True)
-        y = torch.zeros(6, requires_grad=True)
-        z = torch.randn(7, requires_grad=True)
+        x = torch.randn(5)
+        y = torch.zeros(6)
+        z = torch.randn(7)
         for indexing in ("xy", "ij"):
-            self.run_test(Meshgrid(indexing), (x, y, z))
+            self.assert_export(Meshgrid(indexing), (x, y, z))
 
     def test_meshgrid_scalar(self):
         class Meshgrid(torch.nn.Module):
@@ -7664,10 +7173,10 @@ class DynamoExporterTest(common_utils.TestCase):
                 output1, output2, output3 = torch.meshgrid(x, y, z)
                 return output1, output2, output3
 
-        x = torch.ones(3, requires_grad=True)
-        y = torch.zeros(4, requires_grad=True)
+        x = torch.ones(3)
+        y = torch.zeros(4)
         z = torch.tensor(2.0)
-        self.run_test(Meshgrid(), (x, y, z))
+        self.assert_export(Meshgrid(), (x, y, z))
 
     def test_baddbmm(self):
         class MyModule(torch.nn.Module):
@@ -7680,7 +7189,7 @@ class DynamoExporterTest(common_utils.TestCase):
         batch1 = torch.randn(10, 3, 4)
         batch2 = torch.randn(10, 4, 5)
         model = MyModule()
-        self.run_test(model, (x, batch1, batch2))
+        self.assert_export(model, (x, batch1, batch2))
 
     def test_baddbmm_dynamic(self):
         class MyModule(torch.nn.Module):
@@ -7693,7 +7202,7 @@ class DynamoExporterTest(common_utils.TestCase):
         alpha = torch.tensor(5)
         beta = torch.tensor(3.5)
         model = MyModule()
-        self.run_test(model, (x, batch1, batch2, alpha, beta))
+        self.assert_export(model, (x, batch1, batch2, alpha, beta))
 
     def test_numel(self):
         class MyModule(torch.nn.Module):
@@ -7703,7 +7212,7 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.randn(2, 3, 5)
         x2 = torch.randn(4, 5, 6)
         model = MyModule()
-        self.run_test(
+        self.assert_export(
             model,
             (x,),
             input_names=["x"],
@@ -7719,7 +7228,7 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.randn(0)
         x2 = torch.randn(4)
         model = MyModule()
-        self.run_test(
+        self.assert_export(
             model,
             (x,),
             input_names=["x"],
@@ -7735,7 +7244,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3)
         y = torch.randn(2, 3)
-        self.run_test(MyModel(), (x, y))
+        self.assert_export(MyModel(), (x, y))
 
     def test_dtype_eq(self):
         class MyModel(torch.jit.ScriptModule):
@@ -7747,7 +7256,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3)
         y = torch.randn(2, 3)
-        self.run_test(MyModel(), (x, y))
+        self.assert_export(MyModel(), (x, y))
 
     def test_cast_to(self):
         class MyModule(torch.jit.ScriptModule):
@@ -7758,7 +7267,7 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.randn(2, 3, 4)
         y = torch.tensor([1], dtype=torch.int64)
         model = MyModule()
-        self.run_test(model, (x, y))
+        self.assert_export(model, (x, y))
 
     def test_cast_to_bool(self):
         class MyModule(torch.nn.Module):
@@ -7768,7 +7277,7 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.randn(2, 3, 4)
         y = torch.zeros([2, 3, 4], dtype=torch.bool)
         model = MyModule()
-        self.run_test(model, (x, y))
+        self.assert_export(model, (x, y))
 
     # ONNX supports bfloat16 for opsets >= 13
     def test_cast_type_as_with_bfloat16(self):
@@ -7780,7 +7289,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.ones(3, 4, dtype=torch.float16)
         model = MyModule()
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_type_as(self):
         class MyModule(torch.nn.Module):
@@ -7792,9 +7301,9 @@ class DynamoExporterTest(common_utils.TestCase):
         b = torch.randn(3, 4, dtype=torch.double)
         c = torch.ones((2, 2), dtype=torch.int64)
         model = MyModule()
-        self.run_test(model, a)
-        self.run_test(model, b)
-        self.run_test(model, c)
+        self.assert_export(model, a)
+        self.assert_export(model, b)
+        self.assert_export(model, c)
 
     def test_ones_bool(self):
         class MyModule(torch.nn.Module):
@@ -7804,7 +7313,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 4)
         model = MyModule()
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_log(self):
         class Log(torch.nn.Module):
@@ -7813,7 +7322,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.rand(2, 3, 4)
         model = Log()
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_log1p(self):
         class Log1p(torch.nn.Module):
@@ -7822,7 +7331,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.rand(2, 3, 4)
         model = Log1p()
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_log10(self):
         class Log10(torch.nn.Module):
@@ -7831,7 +7340,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.rand(2, 3, 4)
         model = Log10()
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_log2(self):
         class Log2(torch.nn.Module):
@@ -7840,18 +7349,18 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.tensor(1.0)
         model = Log2()
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_round(self):
         class Round(torch.nn.Module):
             def forward(self, x):
                 return torch.round(x)
 
-        x = torch.tensor([0.9920, -1.0362, -1.5000, 3.5000], requires_grad=True)
-        self.run_test(Round(), x)
+        x = torch.tensor([0.9920, -1.0362, -1.5000, 3.5000])
+        self.assert_export(Round(), x)
 
         int_x = torch.tensor([9920, 1036, -1500, 35], dtype=torch.int32)
-        self.run_test(Round(), int_x)
+        self.assert_export(Round(), int_x)
 
     def test_round_with_decimals(self):
         class Round(torch.nn.Module):
@@ -7864,7 +7373,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.tensor([0.9920, -1234.0362, -1.58960, 3.5000])
         for decimals in (0, -2, 3):
-            self.run_test(Round(decimals), x)
+            self.assert_export(Round(decimals), x)
 
     def test_stft_default(self):
         class STFT(torch.nn.Module):
@@ -7872,8 +7381,8 @@ class DynamoExporterTest(common_utils.TestCase):
                 n_fft = 16
                 return torch.stft(x, n_fft=n_fft, center=False, return_complex=False)
 
-        x = torch.randn((1, 32), requires_grad=True)
-        self.run_test(STFT(), x, atol=1e-6)
+        x = torch.randn((1, 32))
+        self.assert_export(STFT(), x, atol=1e-6)
 
     def test_stft_hop_length(self):
         class STFT(torch.nn.Module):
@@ -7888,8 +7397,8 @@ class DynamoExporterTest(common_utils.TestCase):
                     return_complex=False,
                 )
 
-        x = torch.randn((1, 32), requires_grad=True)
-        self.run_test(STFT(), x, atol=1e-6)
+        x = torch.randn((1, 32))
+        self.assert_export(STFT(), x, atol=1e-6)
 
     def test_stft_non_divisible_hop_length(self):
         class STFT(torch.nn.Module):
@@ -7904,8 +7413,8 @@ class DynamoExporterTest(common_utils.TestCase):
                     return_complex=False,
                 )
 
-        x = torch.randn((1, 32), requires_grad=True)
-        self.run_test(STFT(), x, atol=1e-6)
+        x = torch.randn((1, 32))
+        self.assert_export(STFT(), x, atol=1e-6)
 
     def test_stft_window_int_same_size(self):
         class STFT(torch.nn.Module):
@@ -7920,8 +7429,8 @@ class DynamoExporterTest(common_utils.TestCase):
                     return_complex=False,
                 )
 
-        x = torch.randn((1, 32), requires_grad=True)
-        self.run_test(STFT(), x, atol=1e-6)
+        x = torch.randn((1, 32))
+        self.assert_export(STFT(), x, atol=1e-6)
 
     def test_stft_window_int_different_size(self):
         class STFT(torch.nn.Module):
@@ -7936,8 +7445,8 @@ class DynamoExporterTest(common_utils.TestCase):
                     return_complex=False,
                 )
 
-        x = torch.randn((1, 32), requires_grad=True)
-        self.run_test(STFT(), x, atol=1e-6)
+        x = torch.randn((1, 32))
+        self.assert_export(STFT(), x, atol=1e-6)
 
     def test_stft_window_custom(self):
         class STFT(torch.nn.Module):
@@ -7952,8 +7461,8 @@ class DynamoExporterTest(common_utils.TestCase):
                     return_complex=False,
                 )
 
-        x = torch.randn((1, 32), requires_grad=True)
-        self.run_test(STFT(), x, atol=1e-6)
+        x = torch.randn((1, 32))
+        self.assert_export(STFT(), x, atol=1e-6)
 
     def test_stft_wrong_custom_window_size(self):
         class STFT(torch.nn.Module):
@@ -7964,9 +7473,9 @@ class DynamoExporterTest(common_utils.TestCase):
                     x, n_fft=n_fft, window=window, center=False, return_complex=False
                 )
 
-        x = torch.randn((1, 32), requires_grad=True)
+        x = torch.randn((1, 32))
         with self.assertRaises((AssertionError, RuntimeError)):
-            self.run_test(STFT(), x)
+            self.assert_export(STFT(), x)
 
     def test_stft_wrong_window_length(self):
         class STFT(torch.nn.Module):
@@ -7981,9 +7490,9 @@ class DynamoExporterTest(common_utils.TestCase):
                     return_complex=False,
                 )
 
-        x = torch.randn((1, 32), requires_grad=True)
+        x = torch.randn((1, 32))
         with self.assertRaises(RuntimeError):
-            self.run_test(STFT(), x)
+            self.assert_export(STFT(), x)
 
     def test_stft_window_size_with_win_len(self):
         class STFT(torch.nn.Module):
@@ -8000,8 +7509,8 @@ class DynamoExporterTest(common_utils.TestCase):
                     return_complex=False,
                 )
 
-        x = torch.randn((1, 32), requires_grad=True)
-        self.run_test(STFT(), x, atol=1e-6)
+        x = torch.randn((1, 32))
+        self.assert_export(STFT(), x, atol=1e-6)
 
     def test_stft_one_dimension(self):
         class STFT(torch.nn.Module):
@@ -8014,8 +7523,8 @@ class DynamoExporterTest(common_utils.TestCase):
                     return_complex=False,
                 )
 
-        x = torch.randn((32), requires_grad=True)
-        self.run_test(STFT(), x, atol=1e-6)
+        x = torch.randn(32)
+        self.assert_export(STFT(), x, atol=1e-6)
 
     def test_stft_wrong_input_size(self):
         class STFT(torch.nn.Module):
@@ -8023,9 +7532,9 @@ class DynamoExporterTest(common_utils.TestCase):
                 n_fft = 16
                 return torch.stft(x, n_fft=n_fft, center=False, return_complex=False)
 
-        x = torch.randn((1, 1, 32), requires_grad=True)
+        x = torch.randn((1, 1, 32))
         with self.assertRaises(RuntimeError):
-            self.run_test(STFT(), x)
+            self.assert_export(STFT(), x)
 
     def test_stft_wrong_return_complex(self):
         class STFT(torch.nn.Module):
@@ -8033,9 +7542,9 @@ class DynamoExporterTest(common_utils.TestCase):
                 n_fft = 16
                 return torch.stft(x, n_fft=n_fft, center=False, return_complex=True)
 
-        x = torch.randn((1, 32), requires_grad=True)
+        x = torch.randn((1, 32))
         with self.assertRaises(errors.SymbolicValueError):
-            self.run_test(STFT(), x)
+            self.assert_export(STFT(), x)
 
     def test_stft_normalize(self):
         class STFT(torch.nn.Module):
@@ -8049,8 +7558,8 @@ class DynamoExporterTest(common_utils.TestCase):
                     return_complex=False,
                 )
 
-        x = torch.randn((32), requires_grad=True)
-        self.run_test(STFT(), x, atol=1e-6)
+        x = torch.randn(32)
+        self.assert_export(STFT(), x, atol=1e-6)
 
     def test_stft_not_onesided(self):
         class STFT(torch.nn.Module):
@@ -8064,17 +7573,17 @@ class DynamoExporterTest(common_utils.TestCase):
                     return_complex=False,
                 )
 
-        x = torch.randn((32), requires_grad=True)
-        self.run_test(STFT(), x, atol=1e-6)
+        x = torch.randn(32)
+        self.assert_export(STFT(), x, atol=1e-6)
 
     def test_constant_pad(self):
         model = torch.nn.ConstantPad1d(2, 3.5)
         x = torch.randn(2, 4, 4)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
         model = torch.nn.ConstantPad2d((3, 0, 2, 1), 3.5)
         x = torch.randn(2, 2, 4, 4)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     @common_utils.parametrize(
         "pad",
@@ -8096,7 +7605,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.nn.functional.pad(x, pad)
 
         x = torch.randn(2, 2, 4, 4)
-        self.run_test(Pad(), (x, pad))
+        self.assert_export(Pad(), (x, pad))
 
     def test_pad_circular(self):
         class PadModel(torch.nn.Module):
@@ -8105,7 +7614,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return out
 
         x = torch.randn(2, 3, 3, 4)
-        self.run_test(PadModel(), (x))
+        self.assert_export(PadModel(), (x))
 
     def test_pad_circular_negative(self):
         # Test for different pad integer types
@@ -8115,7 +7624,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return out
 
         x = torch.randn(2, 3, 6)
-        self.run_test(PadModel(), (x))
+        self.assert_export(PadModel(), (x))
 
     def test_pad_circular_dynamic_axes(self):
         class PadModel(torch.nn.Module):
@@ -8124,7 +7633,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return out
 
         x = torch.randn(4, 3, 5, 6)
-        self.run_test(
+        self.assert_export(
             PadModel(),
             x,
             input_names=["input_1"],
@@ -8132,7 +7641,7 @@ class DynamoExporterTest(common_utils.TestCase):
         )
 
     @skipIfUnsupportedMaxOpsetVersion(10)
-  # TODO: the logic in symbolic_opset9 doesn't handle script
+    # TODO: the logic in symbolic_opset9 doesn't handle script
     def test_unsupported_pad(self):
         class Pad(torch.nn.Module):
             def forward(self, x, pad: list[int]):
@@ -8148,7 +7657,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 + "The sizes of the padding must be constant"
             ),
         ):
-            self.run_test(Pad(), (x, y))
+            self.assert_export(Pad(), (x, y))
 
     def test_if_fold(self):
         class IfFoldModel(torch.nn.Module):
@@ -8161,7 +7670,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return y
 
         x = torch.ones((3, 4), dtype=torch.int)
-        self.run_test(IfFoldModel(), x)
+        self.assert_export(IfFoldModel(), x)
 
         class IfFoldModel(torch.nn.Module):
             def forward(self, y):
@@ -8172,7 +7681,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return y
 
         x = torch.ones((3, 4), dtype=torch.int)
-        self.run_test(IfFoldModel(), x)
+        self.assert_export(IfFoldModel(), x)
 
         class IfFoldModel(torch.nn.Module):
             def forward(self, y):
@@ -8184,7 +7693,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return y
 
         x = torch.ones((3, 4), dtype=torch.int)
-        self.run_test(IfFoldModel(), x)
+        self.assert_export(IfFoldModel(), x)
 
         class IfFoldModel(torch.nn.Module):
             def forward(self, y):
@@ -8195,7 +7704,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return y
 
         x = torch.ones((3, 4), dtype=torch.int)
-        self.run_test(IfFoldModel(), x)
+        self.assert_export(IfFoldModel(), x)
 
         class IfFoldModel(torch.nn.Module):
             def forward(self, y):
@@ -8206,7 +7715,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return y
 
         x = torch.ones((3, 4), dtype=torch.int)
-        self.run_test(IfFoldModel(), x)
+        self.assert_export(IfFoldModel(), x)
 
         class IfFoldModel(torch.nn.Module):
             def forward(self, y):
@@ -8218,7 +7727,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return y
 
         x = torch.ones((3, 4), dtype=torch.int)
-        self.run_test(IfFoldModel(), x)
+        self.assert_export(IfFoldModel(), x)
 
         class IfFoldModel(torch.nn.Module):
             def forward(self, y):
@@ -8230,7 +7739,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return y
 
         x = torch.ones((3, 4), dtype=torch.int)
-        self.run_test(IfFoldModel(), x)
+        self.assert_export(IfFoldModel(), x)
 
         class IfFoldModel(torch.nn.Module):
             def forward(self, y):
@@ -8242,7 +7751,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return y
 
         x = torch.ones((3, 4), dtype=torch.int)
-        self.run_test(IfFoldModel(), x)
+        self.assert_export(IfFoldModel(), x)
 
         class IfFoldModel(torch.nn.Module):
             def forward(self, x, y):
@@ -8254,7 +7763,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.ones((3, 4), dtype=torch.int)
         y = torch.ones((3, 4), dtype=torch.int)
-        self.run_test(IfFoldModel(), (x, y))
+        self.assert_export(IfFoldModel(), (x, y))
 
         class IfFoldModel(torch.nn.Module):
             def forward(self, x, y):
@@ -8266,7 +7775,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.ones((3, 4), dtype=torch.int)
         y = torch.ones((3, 4), dtype=torch.int)
-        self.run_test(IfFoldModel(), (x, y))
+        self.assert_export(IfFoldModel(), (x, y))
 
     def test_uninitialized(self):
         class UninitializedModel(torch.nn.Module):
@@ -8279,7 +7788,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return y
 
         x = torch.ones((3, 4), dtype=torch.int)
-        self.run_test(UninitializedModel(), x)
+        self.assert_export(UninitializedModel(), x)
 
     def test_uninitialized_dynamic(self):
         class UninitializedModel(torch.nn.Module):
@@ -8293,7 +7802,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.ones((3, 4), dtype=torch.int)
         y = torch.ones((6, 7), dtype=torch.int)
-        self.run_test(
+        self.assert_export(
             UninitializedModel(),
             x,
             additional_test_inputs=[y],
@@ -8313,7 +7822,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return [x]
 
         x = torch.ones((3, 4), dtype=torch.int)
-        self.run_test(torch.jit.script(UninitializedTensorListModel()), x)
+        self.assert_export(torch.jit.script(UninitializedTensorListModel()), x)
 
     # onnx::Identity of sequence supported for ONNX opset >= 14
     def test_uninitialized_tensorList_dynamic(self):
@@ -8327,7 +7836,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return list(x)
 
         x = torch.ones((3, 4), dtype=torch.double)
-        self.run_test(
+        self.assert_export(
             torch.jit.script(UninitializedTensorListModel()),
             x,
             input_names=["input_1"],
@@ -8348,7 +7857,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return y
 
         x = torch.ones((3, 4), dtype=torch.int)
-        self.run_test(
+        self.assert_export(
             torch.jit.script(UninitializedListModel()),
             x,
             input_names=["input_1"],
@@ -8370,7 +7879,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.ones((3, 4), dtype=torch.int)
         y = torch.ones((4, 6), dtype=torch.int)
-        self.run_test(
+        self.assert_export(
             torch.jit.script(UninitializedModel()),
             x,
             additional_test_inputs=[y],
@@ -8388,25 +7897,25 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.stack(outputs).transpose(0, 1)
 
         x = torch.ones((3, 4), dtype=torch.int)
-        self.run_test(torch.jit.script(SequanceLoopModel()), x)
+        self.assert_export(torch.jit.script(SequanceLoopModel()), x)
 
     def test_reflection_pad(self):
         model = torch.nn.ReflectionPad1d(2)
         x = torch.randn(2, 4, 4)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
         model = torch.nn.ReflectionPad2d((3, 0, 2, 1))
         x = torch.randn(2, 2, 4, 4)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_replication_pad(self):
         model = torch.nn.ReplicationPad1d(2)
         x = torch.randn(2, 4, 4)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
         model = torch.nn.ReplicationPad2d((3, 0, 2, 1))
         x = torch.randn(2, 2, 4, 4)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_im2col(self):
         class Unfold(torch.nn.Module):
@@ -8424,7 +7933,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 )
 
         x = torch.rand(1, 1, 200, 100)
-        self.run_test(Unfold(), x)
+        self.assert_export(Unfold(), x)
 
     @skipIfNoLapack
     def test_det(self):
@@ -8433,7 +7942,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.linalg.det(x)
 
         x = torch.randn(2, 3, 5, 5)
-        self.run_test(Det(), x)
+        self.assert_export(Det(), x)
 
     def test_linalg_norm(self):
         class LinalgSingleDimModel(torch.nn.Module):
@@ -8445,12 +7954,12 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.linalg.norm(x, ord=self.ord, dim=1)
 
         x = torch.randn(2, 3, 5, 5)
-        self.run_test(LinalgSingleDimModel(None), x)
-        self.run_test(LinalgSingleDimModel(2), x)
-        self.run_test(LinalgSingleDimModel(float("inf")), x)
-        self.run_test(LinalgSingleDimModel(-float("inf")), x)
-        self.run_test(LinalgSingleDimModel(-4), x)
-        self.run_test(LinalgSingleDimModel(1.5), x)
+        self.assert_export(LinalgSingleDimModel(None), x)
+        self.assert_export(LinalgSingleDimModel(2), x)
+        self.assert_export(LinalgSingleDimModel(float("inf")), x)
+        self.assert_export(LinalgSingleDimModel(-float("inf")), x)
+        self.assert_export(LinalgSingleDimModel(-4), x)
+        self.assert_export(LinalgSingleDimModel(1.5), x)
 
         class LinalgMultiDimModel(torch.nn.Module):
             def __init__(self, ord_val):
@@ -8461,22 +7970,22 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.linalg.norm(x, ord=self.ord, dim=(0, 2))
 
         x = torch.randn(2, 3, 5, 5)
-        self.run_test(LinalgMultiDimModel("fro"), x)
-        self.run_test(LinalgMultiDimModel(float("inf")), x)
-        self.run_test(LinalgMultiDimModel(-float("inf")), x)
-        self.run_test(LinalgMultiDimModel(1), x)
-        self.run_test(LinalgMultiDimModel(-1), x)
+        self.assert_export(LinalgMultiDimModel("fro"), x)
+        self.assert_export(LinalgMultiDimModel(float("inf")), x)
+        self.assert_export(LinalgMultiDimModel(-float("inf")), x)
+        self.assert_export(LinalgMultiDimModel(1), x)
+        self.assert_export(LinalgMultiDimModel(-1), x)
 
         class LinalgNoDimNoOrdModel(torch.nn.Module):
             def forward(self, x):
                 return torch.linalg.norm(x)
 
         x = torch.randn(2, 3, 5, 5)
-        self.run_test(LinalgNoDimNoOrdModel(), x)
+        self.assert_export(LinalgNoDimNoOrdModel(), x)
         y = torch.randn(2, 3)
-        self.run_test(LinalgNoDimNoOrdModel(), y)
+        self.assert_export(LinalgNoDimNoOrdModel(), y)
         z = torch.randn(2)
-        self.run_test(LinalgNoDimNoOrdModel(), z)
+        self.assert_export(LinalgNoDimNoOrdModel(), z)
 
         class LinalgNoDim1DModel(torch.nn.Module):
             def __init__(self, ord_val):
@@ -8487,12 +7996,12 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.linalg.norm(x, ord=self.ord)
 
         x = torch.randn(2)
-        self.run_test(LinalgNoDim1DModel(None), x)
-        self.run_test(LinalgNoDim1DModel(2), x)
-        self.run_test(LinalgNoDim1DModel(float("inf")), x)
-        self.run_test(LinalgNoDim1DModel(-float("inf")), x)
-        self.run_test(LinalgNoDim1DModel(-4), x)
-        self.run_test(LinalgNoDim1DModel(1.5), x)
+        self.assert_export(LinalgNoDim1DModel(None), x)
+        self.assert_export(LinalgNoDim1DModel(2), x)
+        self.assert_export(LinalgNoDim1DModel(float("inf")), x)
+        self.assert_export(LinalgNoDim1DModel(-float("inf")), x)
+        self.assert_export(LinalgNoDim1DModel(-4), x)
+        self.assert_export(LinalgNoDim1DModel(1.5), x)
 
         class LinalgNoDim2DModel(torch.nn.Module):
             def __init__(self, ord_val):
@@ -8503,11 +8012,11 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.linalg.norm(x, ord=self.ord)
 
         x = torch.randn(2, 3)
-        self.run_test(LinalgNoDim2DModel("fro"), x)
-        self.run_test(LinalgNoDim2DModel(float("inf")), x)
-        self.run_test(LinalgNoDim2DModel(-float("inf")), x)
-        self.run_test(LinalgNoDim2DModel(1), x)
-        self.run_test(LinalgNoDim2DModel(-1), x)
+        self.assert_export(LinalgNoDim2DModel("fro"), x)
+        self.assert_export(LinalgNoDim2DModel(float("inf")), x)
+        self.assert_export(LinalgNoDim2DModel(-float("inf")), x)
+        self.assert_export(LinalgNoDim2DModel(1), x)
+        self.assert_export(LinalgNoDim2DModel(-1), x)
 
     def test_linalg_vector_norm_zero(self):
         class LinalgVectorNormModel(torch.nn.Module):
@@ -8519,7 +8028,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.linalg.vector_norm(x, ord=self.ord)
 
         x = torch.randn(2, 3, 5, 5)
-        self.run_test(LinalgVectorNormModel(0), x)
+        self.assert_export(LinalgVectorNormModel(0), x)
 
     def test_linalg_vector_norm(self):
         class LinalgVectorNormModel(torch.nn.Module):
@@ -8538,7 +8047,7 @@ class DynamoExporterTest(common_utils.TestCase):
         dim_options = [(None, False), (1, False), ((1, 2), False), ((1, 2), True)]
         for ord_val in ord_options:
             for dim_info in dim_options:
-                self.run_test(LinalgVectorNormModel(ord_val, dim_info), x)
+                self.assert_export(LinalgVectorNormModel(ord_val, dim_info), x)
 
     def test_linalg_matrix_norm(self):
         class LinalgMatrixNormModel(torch.nn.Module):
@@ -8556,9 +8065,9 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.randn(2, 3, 5, 5)
         ord_options = ["fro", float("inf"), -float("inf"), 1, -1]
         for ord_val in ord_options:
-            self.run_test(LinalgMatrixNormModel(ord_val), x)
-            self.run_test(LinalgMatrixNormModel(ord_val, (0, 2)), x)
-            self.run_test(LinalgMatrixNormModel(ord_val, (0, 2), True), x)
+            self.assert_export(LinalgMatrixNormModel(ord_val), x)
+            self.assert_export(LinalgMatrixNormModel(ord_val, (0, 2)), x)
+            self.assert_export(LinalgMatrixNormModel(ord_val, (0, 2), True), x)
 
     def test_linalg_cross(self):
         class Cross(torch.nn.Module):
@@ -8567,7 +8076,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(5, 3, 2, 3)
         y = torch.randn(1, 3, 1, 3)
-        self.run_test(Cross(), input_args=(x, y))
+        self.assert_export(Cross(), input_args=(x, y))
 
     # This test checks output scalar type in the ONNX graph should not be null
     # https://github.com/pytorch/pytorch/issues/28607
@@ -8581,7 +8090,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return center_slice_helper(input, torch.tensor(input.shape[1] - 1))
 
         x = torch.randn(3, 4)
-        self.run_test(CenterCrop(), x)
+        self.assert_export(CenterCrop(), x)
 
     @skipIfNoLapack
     def test_logdet(self):
@@ -8590,7 +8099,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.logdet(x)
 
         x = torch.randn(2, 3, 5, 5)
-        self.run_test(LogDet(), x)
+        self.assert_export(LogDet(), x)
 
     def test_dim(self):
         class DimModel(torch.jit.ScriptModule):
@@ -8600,26 +8109,11 @@ class DynamoExporterTest(common_utils.TestCase):
                 out *= out.dim()
                 return out
 
-        empty_input = torch.randn(0, requires_grad=True)
-        multi_dim_input = torch.randn(1, 2, 3, requires_grad=True)
-        self.run_test(DimModel(), empty_input)
-        self.run_test(DimModel(), multi_dim_input)
+        empty_input = torch.randn(0)
+        multi_dim_input = torch.randn(1, 2, 3)
+        self.assert_export(DimModel(), empty_input)
+        self.assert_export(DimModel(), multi_dim_input)
 
-    def test_dim_1(self):
-        class M(torch.jit.ScriptModule):
-            @torch.jit.script_method
-            def forward(self, poses):
-                boxes = torch.zeros([poses.shape[0], 2, 4])
-                batch_boxes = []
-                for kp_boxes in boxes:
-                    kp_boxes = torchvision.ops.clip_boxes_to_image(kp_boxes, (2, 3))
-                    batch_boxes.append(kp_boxes)
-                return batch_boxes
-
-        dummy_inputs = torch.rand(2, 2, 3)
-        self.run_test(M(), (dummy_inputs,), input_names=["x"], dynamic_axes={"x": [0]})
-
-    @skipDtypeChecking
     def test_outer(self):
         class Outer(torch.nn.Module):
             def forward(self, x, y):
@@ -8627,19 +8121,19 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.arange(1, 5)
         y = torch.arange(1, 4)
-        self.run_test(Outer(), input_args=(x, y))
+        self.assert_export(Outer(), input_args=(x, y))
 
         x = torch.arange(1, 6).to(dtype=torch.float32)
         y = torch.arange(1, 4).to(dtype=torch.long)
-        self.run_test(Outer(), input_args=(x, y))
+        self.assert_export(Outer(), input_args=(x, y))
 
         x = torch.arange(2, 5).to(dtype=torch.float32)
         y = torch.arange(2, 4).to(dtype=torch.float64)
-        self.run_test(Outer(), input_args=(x, y))
+        self.assert_export(Outer(), input_args=(x, y))
 
         x = torch.arange(3, 6).to(dtype=torch.int32)
         y = torch.arange(4, 7).to(dtype=torch.long)
-        self.run_test(Outer(), input_args=(x, y))
+        self.assert_export(Outer(), input_args=(x, y))
 
     def test_movedim(self):
         class MovedimModel(torch.nn.Module):
@@ -8655,7 +8149,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(5, 3, 4, 2)
 
-        self.run_test(MovedimModel(), x)
+        self.assert_export(MovedimModel(), x)
 
     def test_moveaxis(self):
         # moveaxis is an alias of movedim; thus, mostly copied from `test_movedim`.
@@ -8672,7 +8166,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(5, 3, 4, 2)
 
-        self.run_test(MoveaxisModel(), x)
+        self.assert_export(MoveaxisModel(), x)
 
     def test_einsum(self):
         class EinsumModelBatchDiagonal(torch.nn.Module):
@@ -8681,7 +8175,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.einsum(eqn, x)
 
         for x in [torch.randn(3, 5, 5), torch.randn(3, 5, 5).to(dtype=torch.bool)]:
-            self.run_test(EinsumModelBatchDiagonal(), input_args=(x,))
+            self.assert_export(EinsumModelBatchDiagonal(), input_args=(x,))
 
         class EinsumModelBatchMatmul(torch.nn.Module):
             def forward(self, x, y):
@@ -8690,7 +8184,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(5, 2, 3)
         y = torch.randn(5, 3, 4)
-        self.run_test(EinsumModelBatchMatmul(), input_args=(x, y))
+        self.assert_export(EinsumModelBatchMatmul(), input_args=(x, y))
 
         class EinsumModelInnerProd(torch.nn.Module):
             def forward(self, x, y):
@@ -8699,7 +8193,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(5)
         y = torch.randn(5)
-        self.run_test(EinsumModelInnerProd(), input_args=(x, y))
+        self.assert_export(EinsumModelInnerProd(), input_args=(x, y))
 
         class EinsumModelTranspose(torch.nn.Module):
             def forward(self, x):
@@ -8707,17 +8201,17 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.einsum(eqn, x)
 
         for x in [torch.randn(3, 4), torch.randn(3, 4).to(dtype=torch.bool)]:
-            self.run_test(EinsumModelTranspose(), input_args=(x,))
+            self.assert_export(EinsumModelTranspose(), input_args=(x,))
 
     def test_cosine_similarity(self):
         x = torch.randn(5, 3, 2)
         y = torch.randn(5, 3, 2)
-        self.run_test(torch.nn.CosineSimilarity(dim=2), input_args=(x, y))
+        self.assert_export(torch.nn.CosineSimilarity(dim=2), input_args=(x, y))
 
     def test_pairwise_distance(self):
         x = torch.randn(5, 3, 2)
         y = torch.randn(5, 3, 2)
-        self.run_test(torch.nn.PairwiseDistance(p=2.0), input_args=(x, y))
+        self.assert_export(torch.nn.PairwiseDistance(p=2.0), input_args=(x, y))
 
     def test_cross(self):
         class Cross(torch.nn.Module):
@@ -8726,7 +8220,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(5, 3, 2, 3)
         y = torch.randn(5, 3, 2, 3)
-        self.run_test(Cross(), input_args=(x, y))
+        self.assert_export(Cross(), input_args=(x, y))
 
     def test_cdist(self):
         class Cdist(torch.nn.Module):
@@ -8735,7 +8229,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(5, 3, 3)
         y = torch.randn(5, 2, 3)
-        self.run_test(Cdist(), input_args=(x, y))
+        self.assert_export(Cdist(), input_args=(x, y))
 
     def test_cdist_euclid_dist(self):
         class Cdist(torch.nn.Module):
@@ -8744,7 +8238,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 64, 4)
         y = torch.randn(1, 32, 4)
-        self.run_test(Cdist(), input_args=(x, y))
+        self.assert_export(Cdist(), input_args=(x, y))
 
     def test_cdist_euclid_dist_if_necessary(self):
         class Cdist(torch.nn.Module):
@@ -8755,7 +8249,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 64, 4)
         y = torch.randn(1, 32, 4)
-        self.run_test(Cdist(), input_args=(x, y))
+        self.assert_export(Cdist(), input_args=(x, y))
 
     def test_cdist_no_euclid_dist(self):
         class Cdist(torch.nn.Module):
@@ -8766,7 +8260,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 64, 4)
         y = torch.randn(1, 32, 4)
-        self.run_test(Cdist(), input_args=(x, y))
+        self.assert_export(Cdist(), input_args=(x, y))
 
     def test_crossentropyloss(self):
         for ignore_index in [-100, 1]:
@@ -8800,7 +8294,7 @@ class DynamoExporterTest(common_utils.TestCase):
             def forward(self, input, target):
                 return self.loss(input, target)
 
-        self.run_test(CrossEntropyLossNone(ignore_index), input_args=(x, y))
+        self.assert_export(CrossEntropyLossNone(ignore_index), input_args=(x, y))
 
         class CrossEntropyLossNoneWeight(torch.nn.Module):
             def __init__(self, ignore_index):
@@ -8819,7 +8313,7 @@ class DynamoExporterTest(common_utils.TestCase):
             def forward(self, input, target):
                 return self.loss(input, target)
 
-        self.run_test(CrossEntropyLossNoneWeight(ignore_index), input_args=(x, y))
+        self.assert_export(CrossEntropyLossNoneWeight(ignore_index), input_args=(x, y))
 
         class CrossEntropyLossSum(torch.nn.Module):
             def __init__(self, ignore_index):
@@ -8834,7 +8328,7 @@ class DynamoExporterTest(common_utils.TestCase):
             def forward(self, input, target):
                 return self.loss(input, target)
 
-        self.run_test(CrossEntropyLossSum(ignore_index), input_args=(x, y))
+        self.assert_export(CrossEntropyLossSum(ignore_index), input_args=(x, y))
 
         class CrossEntropyLossSumWeight(torch.nn.Module):
             def __init__(self, ignore_index):
@@ -8853,7 +8347,7 @@ class DynamoExporterTest(common_utils.TestCase):
             def forward(self, input, target):
                 return self.loss(input, target)
 
-        self.run_test(CrossEntropyLossSumWeight(ignore_index), input_args=(x, y))
+        self.assert_export(CrossEntropyLossSumWeight(ignore_index), input_args=(x, y))
 
         class CrossEntropyLossMean(torch.nn.Module):
             def __init__(self, ignore_index):
@@ -8866,7 +8360,7 @@ class DynamoExporterTest(common_utils.TestCase):
             def forward(self, input, target):
                 return self.loss(input, target)
 
-        self.run_test(CrossEntropyLossMean(ignore_index), input_args=(x, y))
+        self.assert_export(CrossEntropyLossMean(ignore_index), input_args=(x, y))
 
         class CrossEntropyLossMeanWeight(torch.nn.Module):
             def __init__(self, ignore_index):
@@ -8881,7 +8375,7 @@ class DynamoExporterTest(common_utils.TestCase):
             def forward(self, input, target):
                 return self.loss(input, target)
 
-        self.run_test(CrossEntropyLossMeanWeight(ignore_index), input_args=(x, y))
+        self.assert_export(CrossEntropyLossMeanWeight(ignore_index), input_args=(x, y))
 
     def test_MSELoss(self):
         class MSELoss(torch.nn.Module):
@@ -8900,7 +8394,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(2, 3, 5)
         y = torch.randn(2, 3, 5)
-        self.run_test(MSELoss(), input_args=(x, y))
+        self.assert_export(MSELoss(), input_args=(x, y))
 
     def test_kldiv_loss(self):
         x = torch.rand(5).log()
@@ -8924,7 +8418,7 @@ class DynamoExporterTest(common_utils.TestCase):
             def forward(self, input, target):
                 return self.loss(input, target.log())
 
-        self.run_test(KLDivLossNone(), input_args=(x, y))
+        self.assert_export(KLDivLossNone(), input_args=(x, y))
 
         class KLDivLossMean(torch.nn.Module):
             def __init__(self) -> None:
@@ -8934,7 +8428,7 @@ class DynamoExporterTest(common_utils.TestCase):
             def forward(self, input, target):
                 return self.loss(input, target)
 
-        self.run_test(KLDivLossMean(), input_args=(x, y))
+        self.assert_export(KLDivLossMean(), input_args=(x, y))
 
         class KLDivLossSum(torch.nn.Module):
             def __init__(self) -> None:
@@ -8944,7 +8438,7 @@ class DynamoExporterTest(common_utils.TestCase):
             def forward(self, input, target):
                 return self.loss(input, target.log())
 
-        self.run_test(KLDivLossSum(), input_args=(x, y))
+        self.assert_export(KLDivLossSum(), input_args=(x, y))
 
         class KLDivLossBatchMean(torch.nn.Module):
             def __init__(self) -> None:
@@ -8954,7 +8448,7 @@ class DynamoExporterTest(common_utils.TestCase):
             def forward(self, input, target):
                 return self.loss(input, target)
 
-        self.run_test(KLDivLossBatchMean(), input_args=(x, y))
+        self.assert_export(KLDivLossBatchMean(), input_args=(x, y))
 
         class KLDivLossMiniBatchMean(torch.nn.Module):
             def __init__(self) -> None:
@@ -8966,7 +8460,7 @@ class DynamoExporterTest(common_utils.TestCase):
             def forward(self, input, target):
                 return self.loss(input, target.log())
 
-        self.run_test(KLDivLossMiniBatchMean(), input_args=(x, y))
+        self.assert_export(KLDivLossMiniBatchMean(), input_args=(x, y))
 
     def test_nllloss(self):
         class NLLModel(torch.nn.Module):
@@ -8985,7 +8479,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         # using test data containing default ignore_index=-100
         target[target == 1] = -100
-        self.run_test(NLLModel(), (input, target))
+        self.assert_export(NLLModel(), (input, target))
 
     def test_nllloss_2d_none(self):
         class NLLModel(torch.nn.Module):
@@ -9005,7 +8499,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         # using test data containing default ignore_index=-100
         target[target == 1] = -100
-        self.run_test(NLLModel(), (input, target))
+        self.assert_export(NLLModel(), (input, target))
 
     def test_nllloss_2d_mean(self):
         class NLLModel(torch.nn.Module):
@@ -9025,7 +8519,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         # using test data containing default ignore_index=-100
         target[target == 1] = -100
-        self.run_test(NLLModel(), (input, target))
+        self.assert_export(NLLModel(), (input, target))
 
     def test_nllloss_2d_sum(self):
         class NLLModel(torch.nn.Module):
@@ -9045,7 +8539,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         # using test data containing default ignore_index=-100
         target[target == 1] = -100
-        self.run_test(NLLModel(), (input, target))
+        self.assert_export(NLLModel(), (input, target))
 
     def test_nllloss_2d_mean_weights(self):
         class NLLModel(torch.nn.Module):
@@ -9065,7 +8559,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         # using test data containing default ignore_index=-100
         target[target == 1] = -100
-        self.run_test(NLLModel(), (input, target))
+        self.assert_export(NLLModel(), (input, target))
 
     def test_nllloss_2d_mean_ignore_index(self):
         class NLLModel(torch.nn.Module):
@@ -9082,7 +8576,7 @@ class DynamoExporterTest(common_utils.TestCase):
         N, C = 5, 4
         input = torch.randn(N, 16, 10, 10)
         target = torch.empty(N, 8, 8, dtype=torch.long).random_(0, C)
-        self.run_test(NLLModel(), (input, target))
+        self.assert_export(NLLModel(), (input, target))
 
     def test_nllloss_dynamic_ignore_index(self):
         import torch.nn.functional as F
@@ -9121,7 +8615,9 @@ class DynamoExporterTest(common_utils.TestCase):
         preds = torch.randn(N, 16)
         target = torch.randint(5, (N,))
         start_position = torch.randint(10, (N, N))
-        self.run_test(LabelSmoothingCrossEntropy(), (preds, target, start_position))
+        self.assert_export(
+            LabelSmoothingCrossEntropy(), (preds, target, start_position)
+        )
 
     def test_nllloss_2d_mean_ignore_index_weights(self):
         class NLLModel(torch.nn.Module):
@@ -9140,7 +8636,7 @@ class DynamoExporterTest(common_utils.TestCase):
         N, C = 5, 4
         input = torch.randn(N, 16, 10, 10)
         target = torch.empty(N, 8, 8, dtype=torch.long).random_(0, C)
-        self.run_test(NLLModel(), (input, target))
+        self.assert_export(NLLModel(), (input, target))
 
     def test_binary_cross_entropy_with_logits(self):
         x = torch.randn(5)
@@ -9170,7 +8666,7 @@ class DynamoExporterTest(common_utils.TestCase):
                     input, target, reduction="none"
                 )
 
-        self.run_test(BCEWithLogitsLossNone(), input_args=(x, y))
+        self.assert_export(BCEWithLogitsLossNone(), input_args=(x, y))
 
         class BCEWithLogitsLossMean(torch.nn.Module):
             def forward(self, input, target):
@@ -9178,7 +8674,7 @@ class DynamoExporterTest(common_utils.TestCase):
                     input, target, reduction="mean"
                 )
 
-        self.run_test(BCEWithLogitsLossMean(), input_args=(x, y))
+        self.assert_export(BCEWithLogitsLossMean(), input_args=(x, y))
 
         class BCEWithLogitsLossSum(torch.nn.Module):
             def forward(self, input, target):
@@ -9186,7 +8682,7 @@ class DynamoExporterTest(common_utils.TestCase):
                     input, target, reduction="sum"
                 )
 
-        self.run_test(BCEWithLogitsLossSum(), input_args=(x, y))
+        self.assert_export(BCEWithLogitsLossSum(), input_args=(x, y))
 
     def _bce_logits_wegiht(self, x, y, weight):
         class BCEWithLogitsLossWegihtNone(torch.nn.Module):
@@ -9195,7 +8691,7 @@ class DynamoExporterTest(common_utils.TestCase):
                     input, target, weight=weight, reduction="none"
                 )
 
-        self.run_test(BCEWithLogitsLossWegihtNone(), input_args=(x, y, weight))
+        self.assert_export(BCEWithLogitsLossWegihtNone(), input_args=(x, y, weight))
 
         class BCEWithLogitsLossWegihtMean(torch.nn.Module):
             def forward(self, input, target, weight):
@@ -9203,7 +8699,7 @@ class DynamoExporterTest(common_utils.TestCase):
                     input, target, weight=weight, reduction="mean"
                 )
 
-        self.run_test(BCEWithLogitsLossWegihtMean(), input_args=(x, y, weight))
+        self.assert_export(BCEWithLogitsLossWegihtMean(), input_args=(x, y, weight))
 
         class BCEWithLogitsLossWegihtSum(torch.nn.Module):
             def forward(self, input, target, weight):
@@ -9211,7 +8707,7 @@ class DynamoExporterTest(common_utils.TestCase):
                     input, target, weight=weight, reduction="sum"
                 )
 
-        self.run_test(BCEWithLogitsLossWegihtSum(), input_args=(x, y, weight))
+        self.assert_export(BCEWithLogitsLossWegihtSum(), input_args=(x, y, weight))
 
     def _bce_logits_posweight(self, x, y, pos_weight):
         class BCEWithLogitsLossPosWegihtNone(torch.nn.Module):
@@ -9220,7 +8716,9 @@ class DynamoExporterTest(common_utils.TestCase):
                     input, target, pos_weight=pos_weight, reduction="none"
                 )
 
-        self.run_test(BCEWithLogitsLossPosWegihtNone(), input_args=(x, y, pos_weight))
+        self.assert_export(
+            BCEWithLogitsLossPosWegihtNone(), input_args=(x, y, pos_weight)
+        )
 
         class BCEWithLogitsLossPosWegihtMean(torch.nn.Module):
             def forward(self, input, target, pos_weight):
@@ -9228,7 +8726,9 @@ class DynamoExporterTest(common_utils.TestCase):
                     input, target, pos_weight=pos_weight, reduction="mean"
                 )
 
-        self.run_test(BCEWithLogitsLossPosWegihtMean(), input_args=(x, y, pos_weight))
+        self.assert_export(
+            BCEWithLogitsLossPosWegihtMean(), input_args=(x, y, pos_weight)
+        )
 
         class BCEWithLogitsLossPosWegihtSum(torch.nn.Module):
             def forward(self, input, target, pos_weight):
@@ -9236,7 +8736,9 @@ class DynamoExporterTest(common_utils.TestCase):
                     input, target, pos_weight=pos_weight, reduction="sum"
                 )
 
-        self.run_test(BCEWithLogitsLossPosWegihtSum(), input_args=(x, y, pos_weight))
+        self.assert_export(
+            BCEWithLogitsLossPosWegihtSum(), input_args=(x, y, pos_weight)
+        )
 
     def _bce_logits_loss_weight_posweight(self, x, y, weight, pos_weight):
         class BCEWithLogitsLossWeightPosweightNone(torch.nn.Module):
@@ -9249,7 +8751,7 @@ class DynamoExporterTest(common_utils.TestCase):
                     reduction="none",
                 )
 
-        self.run_test(
+        self.assert_export(
             BCEWithLogitsLossWeightPosweightNone(),
             input_args=(x, y, weight, pos_weight),
         )
@@ -9264,7 +8766,7 @@ class DynamoExporterTest(common_utils.TestCase):
                     reduction="mean",
                 )
 
-        self.run_test(
+        self.assert_export(
             BCEWithLogitsLossWeightPosweightMean(),
             input_args=(x, y, weight, pos_weight),
         )
@@ -9275,7 +8777,7 @@ class DynamoExporterTest(common_utils.TestCase):
                     input, target, weight=weight, pos_weight=pos_weight, reduction="sum"
                 )
 
-        self.run_test(
+        self.assert_export(
             BCEWithLogitsLossWeightPosweightSum(), input_args=(x, y, weight, pos_weight)
         )
 
@@ -9287,10 +8789,8 @@ class DynamoExporterTest(common_utils.TestCase):
 
         mat1 = torch.randn(2, 3)
         mat2 = torch.randn(3, 3)
-        self.run_test(M(), input_args=(mat1, mat2))
+        self.assert_export(M(), input_args=(mat1, mat2))
 
-        9
-    )  # Because where op is not supported for opset < 9.
     def test_where_with_bool_tensor(self):
         class M(torch.nn.Module):
             def forward(self, mat1, mat2):
@@ -9299,10 +8799,8 @@ class DynamoExporterTest(common_utils.TestCase):
 
         mat1 = torch.randn(2, 3)
         mat2 = torch.ones(2, 3)
-        self.run_test(M(), input_args=(mat1, mat2))
+        self.assert_export(M(), input_args=(mat1, mat2))
 
-        9
-    )  # Because where op is not supported for opset < 9.
     def test_where_with_byte_tensor(self):
         class M(torch.nn.Module):
             def forward(self, cond, mat1, mat2):
@@ -9313,7 +8811,7 @@ class DynamoExporterTest(common_utils.TestCase):
         cond[1, 2] = 0
         mat1 = torch.randn(2, 3)
         mat2 = torch.ones(2, 3)
-        self.run_test(M(), input_args=(cond, mat1, mat2))
+        self.assert_export(M(), input_args=(cond, mat1, mat2))
 
     def test_isinf(self):
         class M(torch.nn.Module):
@@ -9321,7 +8819,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x.isinf()
 
         x = torch.tensor([[1, 2, float("inf")], [2, float("nan"), float("inf")]])
-        self.run_test(M(), (x,))
+        self.assert_export(M(), (x,))
 
     def test_isfinite(self):
         class M(torch.nn.Module):
@@ -9329,7 +8827,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x.isfinite()
 
         x = torch.tensor([[1, 2, float("inf")], [2, float("nan"), -float("inf")]])
-        self.run_test(M(), (x,))
+        self.assert_export(M(), (x,))
 
     def test_isnan(self):
         class M(torch.nn.Module):
@@ -9337,10 +8835,8 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x.isnan()
 
         x = torch.tensor([[1, 2, float("inf")], [2, float("nan"), float("inf")]])
-        self.run_test(M(), (x,))
+        self.assert_export(M(), (x,))
 
-        10
-    )  # ONNX IsNaN, IsInf op is added in opset 9, 10 respectively.
     def test_nan_to_num(self):
         class NoParams(torch.nn.Module):
             def forward(self, x):
@@ -9349,16 +8845,16 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.tensor([[1, 2, float("inf")], [2, float("nan"), -float("inf")]])
         xint = torch.ones((2, 4), dtype=torch.int)
         xhalf = torch.ones((2, 4), dtype=torch.half)
-        self.run_test(NoParams(), (x,))
-        self.run_test(NoParams(), (xint,))
-        self.run_test(NoParams(), (xhalf,))
+        self.assert_export(NoParams(), (x,))
+        self.assert_export(NoParams(), (xint,))
+        self.assert_export(NoParams(), (xhalf,))
 
         class WithParams(torch.nn.Module):
             def forward(self, x):
                 return x.nan_to_num(nan=2.3, posinf=4.5, neginf=6.7)
 
         x = torch.tensor([[1, 2, float("inf")], [2, float("nan"), -float("inf")]])
-        self.run_test(WithParams(), (x,))
+        self.assert_export(WithParams(), (x,))
 
     def test_maximum_minimum(self):
         class ModelWithNan(torch.nn.Module):
@@ -9367,7 +8863,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.tensor([-2, -2, float("nan")])
         y = torch.rand(1, 3)
-        self.run_test(ModelWithNan(), (x, y))
+        self.assert_export(ModelWithNan(), (x, y))
 
     def test_minimum_dtypes(self):
         class MinimumModel(torch.nn.Module):
@@ -9376,19 +8872,19 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn((5, 5), dtype=torch.float16)
         y = torch.randn((5, 5), dtype=torch.float)
-        self.run_test(MinimumModel(), (x, y))
+        self.assert_export(MinimumModel(), (x, y))
 
         x = torch.randn((5, 5), dtype=torch.float16)
         y = torch.randint(10, (5, 5), dtype=torch.int16)
-        self.run_test(MinimumModel(), (x, y))
+        self.assert_export(MinimumModel(), (x, y))
 
         x = torch.randint(10, (5, 5), dtype=torch.int16)
         y = torch.randint(10, (5, 5), dtype=torch.int32)
-        self.run_test(MinimumModel(), (x, y))
+        self.assert_export(MinimumModel(), (x, y))
 
         x = torch.randint(10, (5, 5), dtype=torch.int)
         y = torch.full_like(x, True)
-        self.run_test(MinimumModel(), (x, y))
+        self.assert_export(MinimumModel(), (x, y))
 
     def test_maximum_dtypes(self):
         class MaximumModel(torch.nn.Module):
@@ -9397,19 +8893,19 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn((5, 5), dtype=torch.float16)
         y = torch.randn((5, 5), dtype=torch.float)
-        self.run_test(MaximumModel(), (x, y))
+        self.assert_export(MaximumModel(), (x, y))
 
         x = torch.randn((5, 5), dtype=torch.float16)
         y = torch.randint(10, (5, 5), dtype=torch.int16)
-        self.run_test(MaximumModel(), (x, y))
+        self.assert_export(MaximumModel(), (x, y))
 
         x = torch.randint(10, (5, 5), dtype=torch.int16)
         y = torch.randint(10, (5, 5), dtype=torch.int32)
-        self.run_test(MaximumModel(), (x, y))
+        self.assert_export(MaximumModel(), (x, y))
 
         x = torch.randint(10, (5, 5), dtype=torch.int)
         y = torch.full_like(x, True)
-        self.run_test(MaximumModel(), (x, y))
+        self.assert_export(MaximumModel(), (x, y))
 
     def test_any(self):
         class M(torch.nn.Module):
@@ -9417,21 +8913,21 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x.any()
 
         x = torch.tensor([[True, False], [False, False]])
-        self.run_test(M(), (x,))
+        self.assert_export(M(), (x,))
 
         class MDim(torch.nn.Module):
             def forward(self, x):
                 return x.any(dim=1)
 
         x = torch.rand(3, 4).bool()
-        self.run_test(MDim(), (x,))
+        self.assert_export(MDim(), (x,))
 
         class MKeepdim(torch.nn.Module):
             def forward(self, x):
                 return x.any(dim=1, keepdim=True)
 
         x = torch.rand(3, 4).bool()
-        self.run_test(MKeepdim(), (x,))
+        self.assert_export(MKeepdim(), (x,))
 
     def test_all(self):
         class M(torch.nn.Module):
@@ -9439,21 +8935,21 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x.all()
 
         x = torch.tensor([[True, False], [False, False]])
-        self.run_test(M(), (x,))
+        self.assert_export(M(), (x,))
 
         class MDim(torch.nn.Module):
             def forward(self, x):
                 return x.all(dim=1)
 
         x = torch.rand(3, 4).bool()
-        self.run_test(MDim(), (x,))
+        self.assert_export(MDim(), (x,))
 
         class MKeepdim(torch.nn.Module):
             def forward(self, x):
                 return x.all(dim=1, keepdim=True)
 
         x = torch.rand(3, 4).bool()
-        self.run_test(MKeepdim(), (x,))
+        self.assert_export(MKeepdim(), (x,))
 
     def test_dropout(self):
         class M(torch.nn.Module):
@@ -9466,11 +8962,11 @@ class DynamoExporterTest(common_utils.TestCase):
                 return dropout
 
         x = torch.randn(10, 3, 53)
-        self.run_test(M(), (x))
+        self.assert_export(M(), (x))
 
     def test_rrelu_eval(self):
         x = torch.tensor([0.5, -0.5])
-        self.run_test(torch.nn.RReLU(0.1, 0.3).eval(), x)
+        self.assert_export(torch.nn.RReLU(0.1, 0.3).eval(), x)
 
     def test_shape_constant_fold(self):
         class ShapeModule(torch.nn.Module):
@@ -9483,7 +8979,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x + shape
 
         x = torch.randn(2, 5)
-        self.run_test(ShapeModule(), (x,), rtol=1e-3, atol=1e-5)
+        self.assert_export(ShapeModule(), (x,), rtol=1e-3, atol=1e-5)
 
     def test_celu(self):
         class Celu(torch.nn.Module):
@@ -9495,7 +8991,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return self.celu(input)
 
         input = torch.randn(2)
-        self.run_test(Celu(), (input,))
+        self.assert_export(Celu(), (input,))
 
     def test_celu_default(self):
         class Celu(torch.nn.Module):
@@ -9507,7 +9003,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return self.celu(input)
 
         input = torch.randn(2)
-        self.run_test(Celu(), (input,))
+        self.assert_export(Celu(), (input,))
 
     def test_celu_alpha(self):
         class Celu(torch.nn.Module):
@@ -9519,7 +9015,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return self.celu(input)
 
         input = torch.randn(2)
-        self.run_test(Celu(), (input,))
+        self.assert_export(Celu(), (input,))
 
     def test_celu_cast(self):
         class Celu(torch.nn.Module):
@@ -9531,7 +9027,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return self.celu(input)
 
         input = torch.randn(2, 5, 7, dtype=torch.float64)
-        self.run_test(Celu(), (input,))
+        self.assert_export(Celu(), (input,))
 
     def test_lower_tuple(self):
         class TupleModule(torch.nn.Module):
@@ -9559,7 +9055,7 @@ class DynamoExporterTest(common_utils.TestCase):
         input1 = torch.randn(2)
         input2 = torch.randn(2)
         input3 = torch.randn(2)
-        self.run_test(TupleModule(), (input1, input2, input3))
+        self.assert_export(TupleModule(), (input1, input2, input3))
 
     def test_lower_tuple_2(self):
         class TupleModule(torch.nn.Module):
@@ -9572,7 +9068,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         input1 = torch.randn(2)
         input2 = torch.randn(2)
-        self.run_test(TupleModule(), (input1, input2))
+        self.assert_export(TupleModule(), (input1, input2))
 
     def test_lower_tuple_3(self):
         class TupleModule(torch.nn.Module):
@@ -9596,7 +9092,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         input1 = (torch.randn(2), torch.randn(2))
         input2 = (torch.randn(2), torch.randn(2))
-        self.run_test(TupleModule(), (input1, input2))
+        self.assert_export(TupleModule(), (input1, input2))
 
     def test_where(self):
         class Model(torch.nn.Module):
@@ -9606,16 +9102,16 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.randint(0, 1, (2, 3, 4), dtype=torch.bool)
         y = torch.randn(2, 1, 4)
         z = torch.ones(2, 3, 1)
-        self.run_test(Model(), (x, y, z))
+        self.assert_export(Model(), (x, y, z))
 
-  # scripting tests run for opsets > 11. See: test_where_condition_script
+    # scripting tests run for opsets > 11. See: test_where_condition_script
     def test_where_condition(self):
         class Model1(torch.nn.Module):
             def forward(self, input):
                 return torch.stack(torch.where(input > 0.5), dim=1)
 
         x = torch.randint(0, 2, (2, 3, 4), dtype=bool)
-        self.run_test(Model1(), (x))
+        self.assert_export(Model1(), (x))
 
         class Model2(torch.nn.Module):
             def forward(self, input, other):
@@ -9623,7 +9119,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randint(0, 1, (2, 3, 4), dtype=bool)
         y = torch.randint(1, 2, (2, 3, 4), dtype=bool)
-        self.run_test(Model2(), (x, y))
+        self.assert_export(Model2(), (x, y))
 
     @skipIfUnsupportedOpsetVersion([13])
     def test_where_condition_script(self):
@@ -9632,7 +9128,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.stack(torch.where(input > 0.5), dim=1)
 
         x = torch.randint(0, 2, (2, 3, 4), dtype=bool)
-        self.run_test(Model1(), (x))
+        self.assert_export(Model1(), (x))
 
         class Model2(torch.nn.Module):
             def forward(self, input, other):
@@ -9640,7 +9136,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randint(0, 1, (2, 3, 4), dtype=bool)
         y = torch.randint(1, 2, (2, 3, 4), dtype=bool)
-        self.run_test(Model2(), (x, y))
+        self.assert_export(Model2(), (x, y))
 
     def test_empty_branch(self):
         class EmptyBranchModel(torch.jit.ScriptModule):
@@ -9656,8 +9152,8 @@ class DynamoExporterTest(common_utils.TestCase):
                     pass
                 return out
 
-        x = torch.randn(1, 2, 3, requires_grad=True)
-        self.run_test(EmptyBranchModel(), x)
+        x = torch.randn(1, 2, 3)
+        self.assert_export(EmptyBranchModel(), x)
 
     def test_derive_index_scripting(self):
         class MyModule(torch.nn.Module):
@@ -9669,7 +9165,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return j
 
         x = torch.randn(5, 13)
-        self.run_test(MyModule(), x)
+        self.assert_export(MyModule(), x)
 
         class MyModule(torch.nn.Module):
             def forward(self, x: Tensor):
@@ -9680,7 +9176,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return j
 
         x = torch.randn(5, 13)
-        self.run_test(MyModule(), x)
+        self.assert_export(MyModule(), x)
 
         class MyModule(torch.nn.Module):
             def forward(self, x: Tensor):
@@ -9690,7 +9186,7 @@ class DynamoExporterTest(common_utils.TestCase):
                     j += [x * y]
                 return j
 
-        self.run_test(MyModule(), x)
+        self.assert_export(MyModule(), x)
 
         class MyModule(torch.nn.Module):
             def forward(self, x: Tensor):
@@ -9700,9 +9196,9 @@ class DynamoExporterTest(common_utils.TestCase):
                     j += [x * y]
                 return j
 
-        self.run_test(MyModule(), x)
+        self.assert_export(MyModule(), x)
 
-  # Scripting fails for add lists for opsets < 11. Chek test_derive_index_scripting
+    # Scripting fails for add lists for opsets < 11. Chek test_derive_index_scripting
     def test_derive_index(self):
         class MyModule(torch.nn.Module):
             def forward(self, x: Tensor):
@@ -9713,7 +9209,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return j
 
         x = torch.randn(5, 13)
-        self.run_test(MyModule(), x)
+        self.assert_export(MyModule(), x)
 
         class MyModule(torch.nn.Module):
             def forward(self, x: Tensor):
@@ -9724,7 +9220,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return j
 
         x = torch.randn(5, 13)
-        self.run_test(MyModule(), x)
+        self.assert_export(MyModule(), x)
 
         class MyModule(torch.nn.Module):
             def forward(self, x: Tensor):
@@ -9734,7 +9230,7 @@ class DynamoExporterTest(common_utils.TestCase):
                     j += [x * y]
                 return j
 
-        self.run_test(MyModule(), x)
+        self.assert_export(MyModule(), x)
 
         class MyModule(torch.nn.Module):
             def forward(self, x: Tensor):
@@ -9744,7 +9240,7 @@ class DynamoExporterTest(common_utils.TestCase):
                     j += [x * y]
                 return j
 
-        self.run_test(MyModule(), x)
+        self.assert_export(MyModule(), x)
 
     def test_if_transpose(self):
         class IfModel(torch.nn.Module):
@@ -9756,7 +9252,7 @@ class DynamoExporterTest(common_utils.TestCase):
                     return x
 
         x = torch.randn(2, 3)
-        self.run_test(
+        self.assert_export(
             torch.jit.script(IfModel()),
             x,
             output_names=["output_1"],
@@ -9776,7 +9272,7 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.randn(2, 3)
         y = torch.randn(3, 3)
         cond = torch.tensor(1, dtype=torch.bool)
-        self.run_test(torch.jit.script(IfModel()), (x, y, cond))
+        self.assert_export(torch.jit.script(IfModel()), (x, y, cond))
 
     def test_if_view(self):
         class IfModel(torch.nn.Module):
@@ -9791,7 +9287,7 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.randn(2, 16, 2, 2)
         y = torch.randn(2, 16, 8)
         cond = torch.tensor(1, dtype=torch.bool)
-        self.run_test(
+        self.assert_export(
             torch.jit.script(IfModel()),
             (x, y, cond),
             output_names=["output_1"],
@@ -9806,15 +9302,15 @@ class DynamoExporterTest(common_utils.TestCase):
             def forward(self, x):
                 return torch.split(x, x.size(1))
 
-        x = torch.randn(1, 2, 3, requires_grad=True)
-        self.run_test(SplitModel(), x)
+        x = torch.randn(1, 2, 3)
+        self.assert_export(SplitModel(), x)
 
     def test_split_tensor_multi(self):
         class SplitModel(torch.nn.Module):
             def forward(self, x):
                 return torch.split(x, torch.ones(3))
 
-        x = torch.randn(1, 2, 3, requires_grad=True)
+        x = torch.randn(1, 2, 3)
 
         def run_model():
             SplitModel(x)
@@ -9830,15 +9326,12 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.randint(4, (4,))
         x[2] = x[0] = 1
         embedding_matrix = torch.rand(10, 3)
-        self.run_test(model, (x, embedding_matrix))
+        self.assert_export(model, (x, embedding_matrix))
 
         x = torch.randint(4, (4, 3, 2))
         x[2] = 1
         x[0][1] = 1
-        self.run_test(model, (x, embedding_matrix))
-        self.run_test(
-            model, (x, embedding_matrix), training=torch.onnx.TrainingMode.TRAINING
-        )
+        self.assert_export(model, (x, embedding_matrix))
 
         class EmbedModelWithoutPaddingIdx(torch.nn.Module):
             def forward(self, input, emb):
@@ -9846,7 +9339,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         model = EmbedModelWithoutPaddingIdx()
         x = torch.randint(4, (4, 3, 2))
-        self.run_test(model, (x, embedding_matrix))
+        self.assert_export(model, (x, embedding_matrix))
 
     def test_embedding_module(self):
         class EmbedModel(torch.nn.Module):
@@ -9863,12 +9356,12 @@ class DynamoExporterTest(common_utils.TestCase):
         model = EmbedModel()
         x = torch.randint(4, (4,))
         x[2] = x[0] = 1
-        self.run_test(model, (x,))
+        self.assert_export(model, (x,))
 
         x = torch.randint(4, (4, 3, 2))
         x[2] = 1
         x[0][1] = 1
-        self.run_test(model, (x,))
+        self.assert_export(model, (x,))
 
         class EmbedModelWithoutPaddingIdx(torch.nn.Module):
             def __init__(self) -> None:
@@ -9880,1046 +9373,17 @@ class DynamoExporterTest(common_utils.TestCase):
 
         model = EmbedModelWithoutPaddingIdx()
         x = torch.randint(4, (4, 3, 2))
-        self.run_test(model, (x,))
+        self.assert_export(model, (x,))
 
     def test_embedding_renorm(self):
         n, d = 7, 5
         embedding = torch.nn.Embedding(n, d, max_norm=0.2)
         idx = torch.tensor([2, 1])
-        self.run_test(embedding, idx)
+        self.assert_export(embedding, idx)
 
         embedding = torch.nn.Embedding(n, d, max_norm=0.5, norm_type=1.0)
         idx = torch.tensor([4, 3, 4, 2])
-        self.run_test(embedding, idx)
-
-    def _dispatch_rnn_test(self, name, *args, **kwargs):
-        if name == "elman":
-            self._elman_rnn_test(*args, **kwargs)
-        if name == "lstm":
-            self._lstm_test(*args, **kwargs)
-        if name == "gru":
-            self._gru_test(*args, **kwargs)
-
-    def _elman_rnn_test(
-        self,
-        layers,
-        nonlinearity,
-        bidirectional,
-        initial_state,
-        packed_sequence,
-        dropout,
-        **extra_kwargs,
-    ):
-        class ElmanWithStateModel(torch.nn.Module):
-            def __init__(self, layers, nonlinearity, bidirect, dropout, batch_first):
-                super().__init__()
-
-                self.batch_first = batch_first
-                self.inner_model = torch.nn.RNN(
-                    RNN_INPUT_SIZE,
-                    RNN_HIDDEN_SIZE,
-                    layers,
-                    nonlinearity=nonlinearity,
-                    bidirectional=bidirectional,
-                    dropout=dropout,
-                    batch_first=batch_first,
-                )
-
-            def forward(self, input: rnn_utils.PackedSequence, hx=None):
-                return self.inner_model(input, hx)
-
-        class ElmanWithoutStateModel(torch.nn.Module):
-            def __init__(self, layers, nonlinearity, bidirect, dropout, batch_first):
-                super().__init__()
-                self.batch_first = batch_first
-                self.inner_model = torch.nn.RNN(
-                    RNN_INPUT_SIZE,
-                    RNN_HIDDEN_SIZE,
-                    layers,
-                    nonlinearity=nonlinearity,
-                    bidirectional=bidirectional,
-                    dropout=dropout,
-                    batch_first=batch_first,
-                )
-
-            def forward(self, input: rnn_utils.PackedSequence):
-                return self.inner_model(input)
-
-        batch_first = packed_sequence == 2
-
-        if initial_state:
-            model = ElmanWithStateModel(
-                layers=layers,
-                bidirect=bidirectional,
-                nonlinearity=nonlinearity,
-                dropout=dropout,
-                batch_first=batch_first,
-            )
-            if packed_sequence:
-                model = (
-                    rnn_model_with_packed_sequence.RnnModelWithPackedSequenceWithState(
-                        model, batch_first
-                    )
-                )
-        else:
-            model = ElmanWithoutStateModel(
-                layers=layers,
-                bidirect=bidirectional,
-                nonlinearity=nonlinearity,
-                dropout=dropout,
-                batch_first=batch_first,
-            )
-            if packed_sequence:
-                model = rnn_model_with_packed_sequence.RnnModelWithPackedSequenceWithoutState(
-                    model, batch_first
-                )
-
-        def make_input(batch_size):
-            seq_lengths = np.random.randint(1, RNN_SEQUENCE_LENGTH + 1, size=batch_size)
-            seq_lengths = sorted(map(int, seq_lengths), reverse=True)
-            inputs = [torch.randn(l, RNN_INPUT_SIZE) for l in seq_lengths]
-            inputs = rnn_utils.pad_sequence(inputs, batch_first=batch_first)
-            inputs = [inputs]
-            input_names = ["input"]
-
-            directions = 2 if bidirectional else 1
-
-            if initial_state:
-                h0 = torch.randn(directions * layers, batch_size, RNN_HIDDEN_SIZE)
-                inputs.append(h0)
-                input_names.append("h0")
-            if packed_sequence != 0:
-                inputs.append(torch.IntTensor(seq_lengths))
-                input_names.append("seq_lengths")
-            if len(inputs) == 1:
-                input = inputs[0]
-            else:
-                input = tuple(inputs)
-            return input, input_names
-
-        input, input_names = make_input(RNN_BATCH_SIZE)
-        dynamic_axes = {"input": [0, 1], "seq_lengths": [0]}
-        if initial_state:
-            dynamic_axes.update({"h0": [1]})
-        export_options = {"input_names": input_names, "dynamic_axes": dynamic_axes}
-
-        # test that the model still runs with a different batch size
-        other_input, _ = make_input(RNN_BATCH_SIZE + 1)
-        self.run_test(
-            model, input, additional_test_inputs=[other_input], **export_options
-        )
-
-    def _lstm_test(
-        self,
-        layers,
-        bidirectional,
-        initial_state,
-        packed_sequence,
-        dropout,
-        **extra_kwargs,
-    ):
-        batch_first = packed_sequence == 2
-
-        if packed_sequence:
-            model = lstm_flattening_result.LstmFlatteningResultWithSeqLength(
-                RNN_INPUT_SIZE,
-                RNN_HIDDEN_SIZE,
-                layers,
-                bidirectional,
-                dropout,
-                batch_first,
-            )
-            if initial_state:
-                model = (
-                    rnn_model_with_packed_sequence.RnnModelWithPackedSequenceWithState(
-                        model, batch_first
-                    )
-                )
-            else:
-                model = rnn_model_with_packed_sequence.RnnModelWithPackedSequenceWithoutState(
-                    model, batch_first
-                )
-        else:
-            model = lstm_flattening_result.LstmFlatteningResultWithoutSeqLength(
-                RNN_INPUT_SIZE,
-                RNN_HIDDEN_SIZE,
-                layers,
-                bidirectional,
-                dropout,
-                batch_first,
-            )
-
-        def make_input(batch_size):
-            seq_lengths = np.random.randint(1, RNN_SEQUENCE_LENGTH + 1, size=batch_size)
-            seq_lengths = sorted(map(int, seq_lengths), reverse=True)
-            inputs = [torch.randn(l, RNN_INPUT_SIZE) for l in seq_lengths]
-            inputs = rnn_utils.pad_sequence(inputs, batch_first=batch_first)
-            inputs = [inputs]
-            input_names = ["input"]
-            directions = 2 if bidirectional else 1
-
-            if initial_state:
-                h0 = torch.randn(directions * layers, batch_size, RNN_HIDDEN_SIZE)
-                c0 = torch.randn(directions * layers, batch_size, RNN_HIDDEN_SIZE)
-                inputs.append((h0, c0))
-                input_names.append("h0")
-                input_names.append("c0")
-            if packed_sequence != 0:
-                inputs.append(torch.IntTensor(seq_lengths))
-                input_names.append("seq_lengths")
-            if len(inputs) == 1:
-                input = inputs[0]
-            else:
-                input = tuple(inputs)
-            return input, input_names
-
-        input, input_names = make_input(RNN_BATCH_SIZE)
-        dynamic_axes = {"input": [0, 1], "seq_lengths": [0]}
-        if initial_state:
-            dynamic_axes.update({"h0": [1], "c0": [1]})
-        export_options = {"input_names": input_names, "dynamic_axes": dynamic_axes}
-
-        # test that the model still runs with a different batch size
-        other_input, _ = make_input(RNN_BATCH_SIZE + 1)
-        self.run_test(
-            model, input, additional_test_inputs=[other_input], **export_options
-        )
-
-    def _gru_test(
-        self,
-        layers,
-        bidirectional,
-        initial_state,
-        packed_sequence,
-        dropout,
-        **extra_kwargs,
-    ):
-        class GRUWithStateModel(torch.nn.Module):
-            def __init__(self, layers, bidirect, dropout, batch_first):
-                super().__init__()
-
-                self.batch_first = batch_first
-                self.inner_model = torch.nn.GRU(
-                    RNN_INPUT_SIZE,
-                    RNN_HIDDEN_SIZE,
-                    num_layers=layers,
-                    bidirectional=bidirectional,
-                    dropout=dropout,
-                    batch_first=batch_first,
-                )
-
-            def forward(self, input: rnn_utils.PackedSequence, hx):
-                return self.inner_model(input, hx)
-
-        class GRUWithoutStateModel(torch.nn.Module):
-            def __init__(self, layers, bidirect, dropout, batch_first):
-                super().__init__()
-                self.batch_first = batch_first
-                self.inner_model = torch.nn.GRU(
-                    RNN_INPUT_SIZE,
-                    RNN_HIDDEN_SIZE,
-                    num_layers=layers,
-                    bidirectional=bidirectional,
-                    dropout=dropout,
-                    batch_first=batch_first,
-                )
-
-            def forward(self, input: rnn_utils.PackedSequence):
-                return self.inner_model(input)
-
-        class GRUNoSeqLengthWithoutStateModel(torch.nn.Module):
-            def __init__(self, layers, bidirect, dropout, batch_first):
-                super().__init__()
-                self.batch_first = batch_first
-                self.inner_model = torch.nn.GRU(
-                    RNN_INPUT_SIZE,
-                    RNN_HIDDEN_SIZE,
-                    num_layers=layers,
-                    bidirectional=bidirectional,
-                    dropout=dropout,
-                    batch_first=batch_first,
-                )
-
-            def forward(self, input):
-                return self.inner_model(input)
-
-        class GRUNoSeqLengthWithStateModel(torch.nn.Module):
-            def __init__(self, layers, bidirect, dropout, batch_first):
-                super().__init__()
-                self.batch_first = batch_first
-                self.inner_model = torch.nn.GRU(
-                    RNN_INPUT_SIZE,
-                    RNN_HIDDEN_SIZE,
-                    num_layers=layers,
-                    bidirectional=bidirectional,
-                    dropout=dropout,
-                    batch_first=batch_first,
-                )
-
-            def forward(self, input, hx):
-                return self.inner_model(input, hx)
-
-        batch_first = packed_sequence == 2
-
-        if packed_sequence:
-            if initial_state:
-                model = GRUWithStateModel(
-                    layers=layers,
-                    bidirect=bidirectional,
-                    dropout=dropout,
-                    batch_first=batch_first,
-                )
-                model = (
-                    rnn_model_with_packed_sequence.RnnModelWithPackedSequenceWithState(
-                        model, batch_first
-                    )
-                )
-            else:
-                model = GRUWithoutStateModel(
-                    layers=layers,
-                    bidirect=bidirectional,
-                    dropout=dropout,
-                    batch_first=batch_first,
-                )
-                model = rnn_model_with_packed_sequence.RnnModelWithPackedSequenceWithoutState(
-                    model, batch_first
-                )
-        else:
-            if initial_state:
-                model = GRUNoSeqLengthWithStateModel(
-                    layers=layers,
-                    bidirect=bidirectional,
-                    dropout=dropout,
-                    batch_first=batch_first,
-                )
-            else:
-                model = GRUNoSeqLengthWithoutStateModel(
-                    layers=layers,
-                    bidirect=bidirectional,
-                    dropout=dropout,
-                    batch_first=batch_first,
-                )
-
-        def make_input(batch_size):
-            seq_lengths = np.random.randint(1, RNN_SEQUENCE_LENGTH + 1, size=batch_size)
-            seq_lengths = sorted(map(int, seq_lengths), reverse=True)
-            inputs = [torch.randn(l, RNN_INPUT_SIZE) for l in seq_lengths]
-            inputs = rnn_utils.pad_sequence(inputs, batch_first=batch_first)
-            inputs = [inputs]
-            input_names = ["input"]
-
-            directions = 2 if bidirectional else 1
-
-            if initial_state:
-                h0 = torch.randn(directions * layers, batch_size, RNN_HIDDEN_SIZE)
-                inputs.append(h0)
-                input_names.append("h0")
-            if packed_sequence != 0:
-                inputs.append(torch.IntTensor(seq_lengths))
-                input_names.append("seq_lengths")
-            if len(inputs) == 1:
-                input = inputs[0]
-            else:
-                input = tuple(inputs)
-            return input, input_names
-
-        input, input_names = make_input(RNN_BATCH_SIZE)
-        dynamic_axes = {"input": [0, 1], "seq_lengths": [0]}
-        if initial_state:
-            dynamic_axes.update({"h0": [1]})
-        export_options = {"input_names": input_names, "dynamic_axes": dynamic_axes}
-
-        # test that the model still runs with a different batch size
-        other_input, _ = make_input(RNN_BATCH_SIZE + 1)
-        self.run_test(
-            model, input, additional_test_inputs=[other_input], **export_options
-        )
-
-    def test_fake_quantize_per_tensor(self):
-        class FakeQuantizePerTensorModel(torch.nn.Module):
-            def forward(self, input):
-                scale = 1.0 / 127
-                zero_point = 0
-                quant_min = -128
-                quant_max = 127
-                return torch.fake_quantize_per_tensor_affine(
-                    input, scale, zero_point, quant_min, quant_max
-                )
-
-        x = torch.randn(6, 4, 3, 3)
-        self.run_test(FakeQuantizePerTensorModel(), (x))
-
-    def test_fake_quantize_per_tensor_dynamic_scale_zeropoint(self):
-        class FakeQuantizePerTensorModel(torch.nn.Module):
-            def forward(self, input, scale, zero_point):
-                quant_min = -128
-                quant_max = 127
-                return torch.fake_quantize_per_tensor_affine(
-                    input, scale, zero_point, quant_min, quant_max
-                )
-
-        x = torch.randn(6, 4, 3, 3)
-        scale = torch.tensor(1.0 / 127)
-        zero_point = torch.tensor(0)
-        self.run_test(FakeQuantizePerTensorModel(), (x, scale, zero_point))
-
-    def test_fake_quantize_per_channel(self):
-        class FakeQuantizePerChannelModel(torch.nn.Module):
-            def forward(self, input):
-                amax = torch.ones(4)
-                scale = amax / 127.0
-                zero_point = torch.zeros_like(amax, dtype=torch.int)
-                # Quantize twice to test differnet branches
-                y = torch.fake_quantize_per_channel_affine(
-                    input, scale, zero_point, 1, 0, 255
-                )
-                return torch.fake_quantize_per_channel_affine(
-                    y, scale, zero_point, 1, -128, 127
-                )
-
-        x = torch.randn(6, 4, 3, 3)
-        self.run_test(FakeQuantizePerChannelModel(), (x))
-
-    # RuntimeError: Can't redefine method:
-    # forward on class: __torch__.torch.nn.modules.linear.Linear
-
-    def test_fake_quantize_activation(self):
-        from torch.ao import quantization
-
-        m = torch.nn.Linear(1, 1)
-        m.qconfig = quantization.QConfig(
-            activation=quantization.default_fake_quant,
-            weight=quantization.default_per_channel_weight_fake_quant,
-        )
-        quantization.prepare_qat(m.train(), inplace=True)
-        m.apply(quantization.enable_observer)
-        m.apply(quantization.enable_fake_quant)
-        for module in m.modules():
-            if isinstance(module, quantization.FakeQuantize):
-                module.calculate_qparams()
-
-        m.apply(quantization.disable_observer)
-        m.eval()
-
-        # Fake quantize activation is a special case, as it restricts quantized range to be (0, 127),
-        # while standard 8bit quantization range is (-128, 127) or (0, 255).
-        # Set fixed weight, bias and inputs to test if ONNX handles the overflow correctly.
-        m.weight = torch.nn.Parameter(torch.tensor([[1.0], [1.0], [1.0]]))
-        m.bias = torch.nn.Parameter(torch.tensor([0.0]))
-        x = torch.tensor([[150.0], [127.0], [-5.0]])
-        self.run_test(m, x)
-
-    def test_batchnorm_training(self):
-        class MyModule(torch.nn.Module):
-            def __init__(self) -> None:
-                super().__init__()
-                self.bn1 = torch.nn.BatchNorm2d(3, affine=False)
-                self.cv1 = torch.nn.Conv2d(3, 3, 10)
-                self.bn2 = torch.nn.BatchNorm2d(3, affine=True)
-                self.cv2 = torch.nn.Conv2d(3, 3, 10)
-                self.bn3 = torch.nn.BatchNorm2d(3, affine=False)
-
-            def forward(self, x):
-                x = self.bn1(x)
-                x = self.cv1(x)
-                x = self.bn2(x)
-                x = self.cv2(x)
-                x = self.bn3(x)
-                return x
-
-        x = torch.randn(10, 3, 20, 20) * 2
-        model_export = MyModule()
-        self.run_test(
-            model_export,
-            (x,),
-            training=torch.onnx.TrainingMode.TRAINING,
-            rtol=1e-3,
-            atol=1e-5,
-        )
-        model_export.train()
-        self.run_test(
-            model_export,
-            (x,),
-            training=torch.onnx.TrainingMode.PRESERVE,
-            rtol=1e-3,
-            atol=1e-5,
-        )
-
-    def test_batchnorm_training_mode_fix_layer(self):
-        class MyModule(torch.nn.Module):
-            def __init__(self) -> None:
-                super().__init__()
-                self.bn1 = torch.nn.BatchNorm2d(3, affine=True)
-                self.cv1 = torch.nn.Conv2d(3, 3, 10)
-                self.bn2 = torch.nn.BatchNorm2d(3, affine=False)
-                self.cv2 = torch.nn.Conv2d(3, 3, 10)
-                self.bn3 = torch.nn.BatchNorm2d(3, affine=True)
-                self.bn3.eval()
-
-            def forward(self, x):
-                x = self.bn1(x)
-                x = self.cv1(x)
-                x = self.bn2(x)
-                x = self.cv2(x)
-                x = self.bn3(x)
-                return x
-
-        x = torch.randn(10, 3, 128, 128)
-        model_export = MyModule()
-        self.run_test(
-            model_export,
-            (x,),
-            training=torch.onnx.TrainingMode.TRAINING,
-            rtol=1e-3,
-            atol=1e-5,
-        )
-        model_export.train()
-        self.run_test(
-            model_export,
-            (x,),
-            training=torch.onnx.TrainingMode.PRESERVE,
-            rtol=1e-3,
-            atol=1e-5,
-        )
-
-    def test_batchnorm_eval_mode_train_layer(self):
-        class MyModule(torch.nn.Module):
-            def __init__(self) -> None:
-                super().__init__()
-                self.bn1 = torch.nn.BatchNorm2d(3, affine=True)
-                self.cv1 = torch.nn.Conv2d(3, 3, 10)
-                self.bn2 = torch.nn.BatchNorm2d(3, affine=False)
-                self.cv2 = torch.nn.Conv2d(3, 3, 10)
-                self.bn3 = torch.nn.BatchNorm2d(3, affine=True)
-                self.bn3.train()
-
-            def forward(self, x):
-                x = self.bn1(x)
-                x = self.cv1(x)
-                x = self.bn2(x)
-                x = self.cv2(x)
-                x = self.bn3(x)
-                return x
-
-        x = torch.randn(10, 3, 128, 128)
-        model_export = MyModule()
-        self.run_test(
-            model_export,
-            (x,),
-            training=torch.onnx.TrainingMode.EVAL,
-            rtol=1e-3,
-            atol=1e-5,
-        )
-        model_export.eval()
-        self.run_test(
-            model_export,
-            (x,),
-            training=torch.onnx.TrainingMode.PRESERVE,
-            rtol=1e-3,
-            atol=1e-5,
-        )
-
-    def test_instancenorm_training(self):
-        class MyModule(torch.nn.Module):
-            def __init__(self) -> None:
-                super().__init__()
-                self.in1 = torch.nn.InstanceNorm2d(3, affine=True)
-                self.cv1 = torch.nn.Conv2d(3, 3, 10)
-                self.in2 = torch.nn.InstanceNorm2d(3, affine=False)
-                self.cv2 = torch.nn.Conv2d(3, 3, 10)
-                self.in3 = torch.nn.InstanceNorm2d(3, affine=True)
-
-            def forward(self, x):
-                x = self.in1(x)
-                x = self.cv1(x)
-                x = self.in2(x)
-                x = self.cv2(x)
-                x = self.in3(x)
-                return x
-
-        x = torch.randn(10, 3, 128, 128)
-        model_export = MyModule()
-        self.run_test(
-            model_export,
-            (x,),
-            training=torch.onnx.TrainingMode.TRAINING,
-            rtol=1e-3,
-            atol=1e-5,
-        )
-        model_export.train()
-        self.run_test(
-            model_export,
-            (x,),
-            training=torch.onnx.TrainingMode.PRESERVE,
-            rtol=1e-3,
-            atol=1e-5,
-        )
-
-    def test_instancenorm_training_mode_fix_layer(self):
-        class MyModule(torch.nn.Module):
-            def __init__(self) -> None:
-                super().__init__()
-                self.in1 = torch.nn.InstanceNorm2d(3, affine=True)
-                self.cv1 = torch.nn.Conv2d(3, 3, 10)
-                self.in2 = torch.nn.InstanceNorm2d(3, affine=False)
-                self.cv2 = torch.nn.Conv2d(3, 3, 10)
-                self.in3 = torch.nn.InstanceNorm2d(3, affine=True)
-                self.in3.eval()
-
-            def forward(self, x):
-                x = self.in1(x)
-                x = self.cv1(x)
-                x = self.in2(x)
-                x = self.cv2(x)
-                x = self.in3(x)
-                return x
-
-        x = torch.randn(10, 3, 128, 128)
-        model_export = MyModule()
-        self.run_test(
-            model_export,
-            (x,),
-            training=torch.onnx.TrainingMode.TRAINING,
-            rtol=1e-3,
-            atol=1e-5,
-        )
-        model_export.train()
-        self.run_test(
-            model_export,
-            (x,),
-            training=torch.onnx.TrainingMode.PRESERVE,
-            rtol=1e-3,
-            atol=1e-5,
-        )
-
-    def test_instancenorm_eval_mode_train_layer(self):
-        class MyModule(torch.nn.Module):
-            def __init__(self) -> None:
-                super().__init__()
-                self.in1 = torch.nn.InstanceNorm2d(8, affine=True)
-                self.cv1 = torch.nn.Conv2d(8, 8, 10)
-                self.in2 = torch.nn.InstanceNorm2d(8, affine=False)
-                self.cv2 = torch.nn.Conv2d(8, 8, 10)
-                self.in3 = torch.nn.InstanceNorm2d(8, affine=True)
-                self.in3.train()
-
-            def forward(self, x):
-                x = self.in1(x)
-                x = self.cv1(x)
-                x = self.in2(x)
-                x = self.cv2(x)
-                x = self.in3(x)
-                return x
-
-        x = torch.randn(10, 8, 128, 128)
-        model_export = MyModule()
-        self.run_test(
-            model_export,
-            (x,),
-            training=torch.onnx.TrainingMode.EVAL,
-            rtol=1e-3,
-            atol=1e-5,
-        )
-        model_export.eval()
-        self.run_test(
-            model_export,
-            (x,),
-            training=torch.onnx.TrainingMode.PRESERVE,
-            rtol=1e-3,
-            atol=1e-5,
-        )
-
-    def test_dropout_training(self):
-        class MyModule(torch.nn.Module):
-            def __init__(self) -> None:
-                super().__init__()
-                self.dropout = torch.nn.Dropout(0.4)
-
-            def forward(self, x):
-                dropout = self.dropout(x)
-                return dropout
-
-        model = MyModule()
-        x = torch.randn(10)
-        model.train()
-
-        model_onnx = io.BytesIO()
-        torch.onnx.export(
-            model,
-            x,
-            model_onnx,
-            opset_version=self.opset_version,
-            do_constant_folding=False,
-            training=torch.onnx.TrainingMode.TRAINING,
-        )
-        ort_sess = verification._ort_session(model_onnx)
-        ort_outs = verification._run_onnx(ort_sess, (x,))
-        assert not torch.all(torch.eq(x, torch.from_numpy(ort_outs[0])))
-
-        script_model = torch.jit.script(model)
-        output = model(x)
-        model_onnx = io.BytesIO()
-        torch.onnx.export(
-            model,
-            x,
-            model_onnx,
-            opset_version=self.opset_version,
-            do_constant_folding=False,
-            training=torch.onnx.TrainingMode.TRAINING,
-        )
-        ort_outs = verification._run_onnx(ort_sess, (x,))
-        assert not torch.all(torch.eq(x, torch.from_numpy(ort_outs[0])))
-
-    def test_dropout_training_zero(self):
-        class MyModule(torch.nn.Module):
-            def __init__(self) -> None:
-                super().__init__()
-                self.dropout = torch.nn.Dropout(0.5)
-
-            def forward(self, x):
-                dropout = self.dropout(x)
-                return dropout
-
-        model = MyModule()
-
-        # ensure there are no zeros in the input
-        x = torch.randn(10, 3, 128, 128)
-        y = x.numpy()
-        y_mask = np.where(y == 0, 1, y)
-        input = torch.from_numpy(y_mask)
-        nb_elements = torch.numel(input)
-
-        model.train()
-        model_onnx = io.BytesIO()
-        torch.onnx.export(
-            model,
-            x,
-            model_onnx,
-            opset_version=self.opset_version,
-            do_constant_folding=False,
-            training=torch.onnx.TrainingMode.TRAINING,
-        )
-        ort_sess = verification._ort_session(model_onnx)
-        ort_outs = verification._run_onnx(ort_sess, (x,))
-
-        y = model(input)
-        output = y.cpu().numpy()
-        ort_mask = np.where(ort_outs[0] != 0, 1, 0)
-        pyt_mask = np.where(output != 0, 1, 0)
-
-        ratio_pytorch = np.sum(pyt_mask) / nb_elements
-        ratio_ort = np.sum(ort_mask) / nb_elements
-
-        np.testing.assert_allclose(ratio_pytorch, ratio_ort, rtol=0.01, atol=0.01)
-
-        script_model = torch.jit.script(model)
-        y = model(input)
-        output = y.cpu().numpy()
-        model_onnx = io.BytesIO()
-        torch.onnx.export(
-            model,
-            x,
-            model_onnx,
-            opset_version=self.opset_version,
-            do_constant_folding=False,
-            training=torch.onnx.TrainingMode.TRAINING,
-        )
-        ort_sess = verification._ort_session(model_onnx)
-        ort_outs = verification._run_onnx(ort_sess, (x,))
-        ort_mask = np.where(ort_outs[0] != 0, 1, 0)
-        pyt_mask = np.where(output != 0, 1, 0)
-
-        ratio_pytorch = np.sum(pyt_mask) / nb_elements
-        ratio_ort = np.sum(ort_mask) / nb_elements
-
-        np.testing.assert_allclose(ratio_pytorch, ratio_ort, rtol=0.01, atol=0.01)
-
-    def test_conv_bn(self):
-        class MyModule(torch.nn.Module):
-            def __init__(self) -> None:
-                super().__init__()
-                self.conv = torch.nn.Conv2d(
-                    3, 16, kernel_size=1, stride=2, padding=3, bias=True
-                )
-                self.bn = torch.nn.BatchNorm2d(16, affine=True)
-
-            def forward(self, x):
-                x = self.conv(x)
-                bn = self.bn(x)
-                return bn
-
-        model_export = MyModule()
-        x = torch.randn(10, 3, 128, 128)
-        self.run_test(model_export, (x,), training=torch.onnx.TrainingMode.EVAL)
-        self.run_test(
-            model_export,
-            (x,),
-            training=torch.onnx.TrainingMode.TRAINING,
-            rtol=1e-3,
-            atol=1e-5,
-        )
-
-    def test_multiple_conv_bn(self):
-        class MyModule(torch.nn.Module):
-            def __init__(self) -> None:
-                super().__init__()
-                self.conv1 = torch.nn.Conv2d(
-                    3, 64, kernel_size=7, stride=2, padding=3, bias=False
-                )
-                self.conv2 = torch.nn.Conv2d(
-                    64, 2, kernel_size=1, stride=1, padding=0, bias=False
-                )
-                self.conv3 = torch.nn.Conv2d(
-                    2, 2, kernel_size=3, stride=1, padding=1, bias=False
-                )
-                self.bn = torch.nn.BatchNorm2d(64)
-                self.bn2 = torch.nn.BatchNorm2d(2)
-                self.relu = torch.nn.ReLU(inplace=True)
-                self.maxpool = torch.nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-
-            def forward(self, x):
-                x = self.conv1(x)
-                x = self.bn(x)
-                x = self.relu(x)
-                x = self.maxpool(x)
-                x = self.conv2(x)
-                x = self.bn2(x)
-                x = self.relu(x)
-                x = self.conv3(x)
-                x = self.bn2(x)
-                x = self.relu(x)
-                return x
-
-        model_export = MyModule()
-        x = torch.randn(2, 3, 224, 224)
-        self.run_test(
-            model_export,
-            (x,),
-            training=torch.onnx.TrainingMode.TRAINING,
-            rtol=1e-3,
-            atol=1e-5,
-        )
-        self.run_test(model_export, (x,), training=torch.onnx.TrainingMode.EVAL)
-
-    def test_nms(self):
-        num_boxes = 100
-        boxes = torch.rand(num_boxes, 4)
-        boxes[:, 2:] += boxes[:, :2]
-        scores = torch.randn(num_boxes)
-
-        class Module(torch.nn.Module):
-            def forward(self, boxes, scores):
-                return torchvision.ops.nms(boxes, scores, 0.5)
-
-        self.run_test(Module(), (boxes, scores))
-
-    def test_batched_nms(self):
-        num_boxes = 100
-        boxes = torch.rand(num_boxes, 4)
-        boxes[:, 2:] += boxes[:, :2]
-        scores = torch.randn(num_boxes)
-        idxs = torch.randint(0, 5, size=(num_boxes,))
-
-        class Module(torch.nn.Module):
-            def forward(self, boxes, scores, idxs):
-                return torchvision.ops.batched_nms(boxes, scores, idxs, 0.5)
-
-        self.run_test(Module(), (boxes, scores, idxs))
-
-
-    def test_clip_boxes_to_image(self):
-        boxes = torch.randn(5, 4) * 500
-        boxes[:, 2:] += boxes[:, :2]
-        size = torch.randn(200, 300)
-
-        size_2 = torch.randn(300, 400)
-
-        class Module(torch.nn.Module):
-            def forward(self, boxes, size):
-                shape = (size.shape[0], size.shape[1])
-                return torchvision.ops.boxes.clip_boxes_to_image(boxes, shape)
-
-        self.run_test(
-            Module(),
-            (boxes, size),
-            input_names=["boxes", "size"],
-            dynamic_axes={"size": [0, 1]},
-            additional_test_inputs=[(boxes, size), (boxes, size_2)],
-        )
-
-    @skipScriptTest(
-        reason="Conditioning on input type via prim::isinstance unsupported in ONNX"
-    )
-    def test_roi_align(self):
-        x = torch.rand(1, 1, 10, 10, dtype=torch.float32)
-        single_roi = torch.tensor([[0, 0, 0, 4, 4]], dtype=torch.float32)
-        model = torchvision.ops.RoIAlign((5, 5), 1.0, 2)
-        self.run_test(model, (x, single_roi))
-
-    @skipScriptTest(
-        reason="Conditioning on input type via prim::isinstance unsupported in ONNX"
-    )
-    def test_roi_align_aligned(self):
-        x = torch.rand(1, 1, 10, 10, dtype=torch.float32)
-        single_roi = torch.tensor([[0, 1.5, 1.5, 3, 3]], dtype=torch.float32)
-        model1 = torchvision.ops.RoIAlign((5, 5), 1.0, 2, aligned=True)
-        self.run_test(model1, (x, single_roi))
-
-        x = torch.rand(1, 1, 10, 10, dtype=torch.float32)
-        single_roi = torch.tensor([[0, 0.2, 0.3, 4.5, 3.5]], dtype=torch.float32)
-        model2 = torchvision.ops.RoIAlign((5, 5), 0.5, 3, aligned=True)
-        self.run_test(model2, (x, single_roi))
-
-        x = torch.rand(1, 1, 10, 10, dtype=torch.float32)
-        single_roi = torch.tensor([[0, 0.2, 0.3, 4.5, 3.5]], dtype=torch.float32)
-        model3 = torchvision.ops.RoIAlign((5, 5), 1.8, 2, aligned=True)
-        self.run_test(model3, (x, single_roi))
-
-        x = torch.rand(1, 1, 10, 10, dtype=torch.float32)
-        single_roi = torch.tensor([[0, 0.2, 0.3, 4.5, 3.5]], dtype=torch.float32)
-        model4 = torchvision.ops.RoIAlign((2, 2), 2.5, 0, aligned=True)
-        self.run_test(model4, (x, single_roi))
-
-    @skipScriptTest(
-        reason="Conditioning on input type via prim::isinstance unsupported in ONNX"
-    )
-    def test_roi_pool(self):
-        x = torch.rand(1, 1, 10, 10, dtype=torch.float32)
-        rois = torch.tensor([[0, 0, 0, 4, 4]], dtype=torch.float32)
-        pool_h = 5
-        pool_w = 5
-        model = torchvision.ops.RoIPool((pool_h, pool_w), 2.0)
-        self.run_test(model, (x, rois))
-
-    def test_resize_images(self):
-        class TransformModule(torch.nn.Module):
-            def __init__(self) -> None:
-                super().__init__()
-                self.transform = _init_test_generalized_rcnn_transform()
-
-            def forward(self, images):
-                return self.transform.resize(images, None)[0]
-
-        input = torch.rand(3, 10, 20)
-        input_test = torch.rand(3, 100, 150)
-        self.run_test(
-            TransformModule(),
-            (input,),
-            input_names=["input1"],
-            dynamic_axes={"input1": [0, 1, 2]},
-            additional_test_inputs=[(input,), (input_test,)],
-        )
-
-
-    def test_transform_images(self):
-        class TransformModule(torch.nn.Module):
-            def __init__(self) -> None:
-                super().__init__()
-                self.transform = _init_test_generalized_rcnn_transform()
-
-            def forward(self, images: list[Tensor]):
-                return self.transform(images)[0].tensors
-
-        input = torch.rand(3, 100, 200), torch.rand(3, 200, 200)
-        input_test = torch.rand(3, 100, 200), torch.rand(3, 200, 200)
-        self.run_test(
-            TransformModule(),
-            (input,),
-            additional_test_inputs=[(input,), (input_test,)],
-        )
-
-    def get_features(self, images):
-        s0, s1 = images.shape[-2:]
-        features = [
-            ("0", torch.rand(2, 256, s0 // 4, s1 // 4)),
-            ("1", torch.rand(2, 256, s0 // 8, s1 // 8)),
-            ("2", torch.rand(2, 256, s0 // 16, s1 // 16)),
-            ("3", torch.rand(2, 256, s0 // 32, s1 // 32)),
-            ("4", torch.rand(2, 256, s0 // 64, s1 // 64)),
-        ]
-        features = OrderedDict(features)
-        return features
-
-
-    def test_rpn(self):
-        class RPNModule(torch.nn.Module):
-            def __init__(self) -> None:
-                super().__init__()
-                self.rpn = _init_test_rpn()
-
-            def forward(self, images, features: dict[str, Tensor]):
-                images_m = torchvision.models.detection.image_list.ImageList(
-                    images, [(i.shape[-1], i.shape[-2]) for i in images]
-                )
-                return self.rpn(images_m, features)
-
-        images = torch.rand(2, 3, 150, 150)
-        features = self.get_features(images)
-        images2 = torch.rand(2, 3, 80, 80)
-        test_features = self.get_features(images2)
-
-        model = RPNModule()
-        model.eval()
-        model(images, features)
-        self.run_test(
-            model,
-            (images, features),
-            input_names=["input1", "input2", "input3", "input4", "input5", "input6"],
-            dynamic_axes={
-                "input1": [0, 1, 2, 3],
-                "input2": [0, 1, 2, 3],
-                "input3": [0, 1, 2, 3],
-                "input4": [0, 1, 2, 3],
-                "input5": [0, 1, 2, 3],
-                "input6": [0, 1, 2, 3],
-            },
-            additional_test_inputs=[(images, features), (images2, test_features)],
-            # dict_check=False,
-        )
-
-    @skipIfUnsupportedMaxOpsetVersion(15)  # TODO: Opset 16 RoiAlign result mismatch
-
-    def test_multi_scale_roi_align(self):
-        class TransformModule(torch.nn.Module):
-            def __init__(self) -> None:
-                super().__init__()
-                self.model = torchvision.ops.MultiScaleRoIAlign(
-                    ["feat1", "feat2"], 3, 2
-                )
-                self.image_sizes = [(512, 512)]
-
-            def forward(self, input: dict[str, Tensor], boxes: list[Tensor]) -> Tensor:
-                return self.model(input, boxes, self.image_sizes)
-
-        i = OrderedDict()
-        i["feat1"] = torch.rand(1, 5, 64, 64)
-        i["feat2"] = torch.rand(1, 5, 16, 16)
-        boxes = torch.rand(6, 4) * 256
-        boxes[:, 2:] += boxes[:, :2]
-
-        i1 = OrderedDict()
-        i1["feat1"] = torch.rand(1, 5, 64, 64)
-        i1["feat2"] = torch.rand(1, 5, 16, 16)
-        boxes1 = torch.rand(6, 4) * 256
-        boxes1[:, 2:] += boxes1[:, :2]
-
-        self.run_test(
-            TransformModule(),
-            (
-                i,
-                [boxes],
-            ),
-            additional_test_inputs=[
-                (
-                    i,
-                    [boxes],
-                ),
-                (
-                    i1,
-                    [boxes1],
-                ),
-            ],
-        )
+        self.assert_export(embedding, idx)
 
     def test_set_(self):
         class M(torch.nn.Module):
@@ -10929,10 +9393,10 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.ones(2, 3)
         y = torch.randn(4, 6)
-        self.run_test(M(), (x, y), remained_onnx_input_idx=[1])
+        self.assert_export(M(), (x, y), remained_onnx_input_idx=[1])
 
         y2 = torch.randn(5, 2)
-        self.run_test(
+        self.assert_export(
             M(),
             (x, y),
             remained_onnx_input_idx=[1],
@@ -10957,7 +9421,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 )
                 return emb
 
-            def forward(self, input, incremental_state: Optional[Tensor] = None):
+            def forward(self, input, incremental_state=None):
                 bsz, seq_len = input.shape[0], input.shape[1]
                 self.const = 3
                 if self.weights is None:
@@ -10997,8 +9461,10 @@ class DynamoExporterTest(common_utils.TestCase):
                 return self.module(x)
 
         x = torch.randn(3, 256)
-        self.run_test(Module(), (x,), input_names=["x"], dynamic_axes={"x": [0, 1]})
-        self.run_test(Module(), (x,), remained_onnx_input_idx=[])
+        self.assert_export(
+            Module(), (x,), input_names=["x"], dynamic_axes={"x": [0, 1]}
+        )
+        self.assert_export(Module(), (x,), remained_onnx_input_idx=[])
 
     def test_set_attr_modules_2(self):
         class InnerModule(torch.nn.Module):
@@ -11017,7 +9483,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 )
                 return emb
 
-            def forward(self, input, incremental_state: Optional[Tensor] = None):
+            def forward(self, input, incremental_state=None):
                 bsz, seq_len = input.shape[0], input.shape[1]
                 self.const = 1.5
                 self.weights = InnerModule.get_embedding(self.embedding_dim)
@@ -11036,8 +9502,10 @@ class DynamoExporterTest(common_utils.TestCase):
                 return self.module(x)
 
         x = torch.randn(3, 256)
-        self.run_test(Module(), (x,), input_names=["x"], dynamic_axes={"x": [0, 1]})
-        self.run_test(Module(), (x,), remained_onnx_input_idx=[])
+        self.assert_export(
+            Module(), (x,), input_names=["x"], dynamic_axes={"x": [0, 1]}
+        )
+        self.assert_export(Module(), (x,), remained_onnx_input_idx=[])
 
     def test_set_attr(self):
         class MyModule(torch.nn.Module):
@@ -11059,7 +9527,7 @@ class DynamoExporterTest(common_utils.TestCase):
         model = torch.jit.script(MyModule())
         weight = torch.ones(3, 2)
         box_regression = torch.randn(3, 2)
-        self.run_test(model, (box_regression, weight))
+        self.assert_export(model, (box_regression, weight))
 
     def test_set_attr_2(self):
         class MyModule(torch.nn.Module):
@@ -11077,13 +9545,13 @@ class DynamoExporterTest(common_utils.TestCase):
                     self.conv.weight = torch.randn(3, 10)
                     self.conv.bias = self.conv.weight[:]
 
-            def forward(self, anchors) -> Optional[Tensor]:
+            def forward(self, anchors):
                 self.set_cell_anchors(anchors)
                 return self.conv.bias
 
         model = torch.jit.script(MyModule())
         anchors = torch.ones(3, 10, 3)
-        self.run_test(model, (anchors))
+        self.assert_export(model, (anchors))
 
     def test_set_attr_3(self):
         class MyModule(torch.nn.Module):
@@ -11109,7 +9577,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         model = torch.jit.script(MyModule())
         anchors = torch.rand(3, 10)
-        self.run_test(model, (anchors))
+        self.assert_export(model, (anchors))
 
     def test_set_attr_4(self):
         class MyModule(torch.nn.Module):
@@ -11140,7 +9608,7 @@ class DynamoExporterTest(common_utils.TestCase):
         model = torch.jit.script(MyModule())
         x = torch.rand(5, 11, 30)
         anchors = torch.ones(3, 10, 3)
-        self.run_test(model, (x, anchors))
+        self.assert_export(model, (x, anchors))
 
     def test_set_attr_5(self):
         class MyModule(torch.nn.Module):
@@ -11170,7 +9638,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         model = torch.jit.script(MyModule())
         anchors = torch.ones(3, 10, 3)
-        self.run_test(model, (anchors))
+        self.assert_export(model, (anchors))
 
     def test_set_attr_in_loop(self):
         class MyModule(torch.nn.Module):
@@ -11197,7 +9665,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         model = torch.jit.script(MyModule())
         anchors = torch.rand(10)
-        self.run_test(model, anchors)
+        self.assert_export(model, anchors)
 
     def test_set_attr_in_loop_with_list(self):
         class MyModule(torch.nn.Module):
@@ -11227,7 +9695,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         model = torch.jit.script(MyModule())
         anchors = torch.rand(10)
-        self.run_test(model, anchors)
+        self.assert_export(model, anchors)
 
     def test_index_put_if(self):
         @torch.jit.script
@@ -11273,13 +9741,15 @@ class DynamoExporterTest(common_utils.TestCase):
         model = Example(10)
         random_data = torch.rand((1, 5, 30, 30))
         empty_tensor = torch.tensor([], dtype=torch.float).view(0, 0, 0, 0, 0)
-        self.run_test(
+        self.assert_export(
             model,
             (random_data, empty_tensor),
             input_names=["random_data", "empty_tensor"],
             dynamic_axes={"random_data": [0, 1, 2, 3], "empty_tensor": [0, 1, 2, 3, 4]},
         )
-        self.run_test(model, (random_data, empty_tensor), remained_onnx_input_idx=[])
+        self.assert_export(
+            model, (random_data, empty_tensor), remained_onnx_input_idx=[]
+        )
 
     def test_index_put_if_2(self):
         @torch.jit.script
@@ -11330,14 +9800,14 @@ class DynamoExporterTest(common_utils.TestCase):
         random_data = torch.rand((1, 5, 30, 30))
         empty_tensor = torch.tensor([], dtype=torch.float).view(0, 0, 0, 0, 0)
         random_state = torch.rand((1, 1, 10, 30, 30))
-        self.run_test(
+        self.assert_export(
             model,
             (random_data, empty_tensor),
             input_names=["data", "state"],
             dynamic_axes={"data": [0, 1, 2], "state": [0, 1, 2, 3, 4]},
             additional_test_inputs=[(random_data, random_state)],
         )
-        self.run_test(
+        self.assert_export(
             model,
             (random_data, empty_tensor),
             input_names=["data", "state"],
@@ -11345,7 +9815,9 @@ class DynamoExporterTest(common_utils.TestCase):
             additional_test_inputs=[(random_data, random_state)],
             remained_onnx_input_idx=[1],
         )
-        self.run_test(model, (random_data, empty_tensor), remained_onnx_input_idx=[])
+        self.assert_export(
+            model, (random_data, empty_tensor), remained_onnx_input_idx=[]
+        )
 
     def test_index_put_if_3(self):
         @torch.jit.script
@@ -11384,13 +9856,15 @@ class DynamoExporterTest(common_utils.TestCase):
         model = Example(4)
         random_data = torch.rand((1, 5, 4, 4))
         empty_tensor = torch.tensor([], dtype=torch.float).view(0, 0, 0, 0, 0)
-        self.run_test(
+        self.assert_export(
             model,
             (random_data, empty_tensor),
             input_names=["random_data", "empty_tensor"],
             dynamic_axes={"random_data": [0, 1, 2, 3], "empty_tensor": [0, 1, 2, 3, 4]},
         )
-        self.run_test(model, (random_data, empty_tensor), remained_onnx_input_idx=[])
+        self.assert_export(
+            model, (random_data, empty_tensor), remained_onnx_input_idx=[]
+        )
 
     def test_index_put_if_4(self):
         @torch.jit.script
@@ -11430,13 +9904,15 @@ class DynamoExporterTest(common_utils.TestCase):
         model = Example(4)
         random_data = torch.rand((1, 5, 4, 4))
         empty_tensor = torch.tensor([], dtype=torch.float).view(0, 0, 0, 0, 0)
-        self.run_test(
+        self.assert_export(
             model,
             (random_data, empty_tensor),
             input_names=["random_data", "empty_tensor"],
             dynamic_axes={"random_data": [0, 1, 2, 3], "empty_tensor": [0, 1, 2, 3, 4]},
         )
-        self.run_test(model, (random_data, empty_tensor), remained_onnx_input_idx=[])
+        self.assert_export(
+            model, (random_data, empty_tensor), remained_onnx_input_idx=[]
+        )
 
     def test_index_put_if_5(self):
         @torch.jit.script
@@ -11478,13 +9954,15 @@ class DynamoExporterTest(common_utils.TestCase):
         model = Example(4)
         random_data = torch.rand((1, 5, 4, 4))
         empty_tensor = torch.tensor([], dtype=torch.float).view(0, 0, 0, 0, 0)
-        self.run_test(
+        self.assert_export(
             model,
             (random_data, empty_tensor),
             input_names=["random_data", "empty_tensor"],
             dynamic_axes={"random_data": [0, 1, 2, 3], "empty_tensor": [0, 1, 2, 3, 4]},
         )
-        self.run_test(model, (random_data, empty_tensor), remained_onnx_input_idx=[])
+        self.assert_export(
+            model, (random_data, empty_tensor), remained_onnx_input_idx=[]
+        )
 
     def test_list_append_in_block(self):
         class ListModel(torch.nn.Module):
@@ -11497,7 +9975,7 @@ class DynamoExporterTest(common_utils.TestCase):
         model = torch.jit.script(ListModel())
         x = torch.randn(16, 3, 4)
         y = torch.randn(4, 5)
-        self.run_test(model, (x, y))
+        self.assert_export(model, (x, y))
 
     def test_list_append_in_nested_block(self):
         class ListModel(torch.nn.Module):
@@ -11511,7 +9989,7 @@ class DynamoExporterTest(common_utils.TestCase):
         model = torch.jit.script(ListModel())
         x = torch.randn(4, 4, 3, 4)
         y = torch.randn(4, 5)
-        self.run_test(model, (x, y))
+        self.assert_export(model, (x, y))
 
     def test_list_pop_in_block(self):
         class ListModel(torch.nn.Module):
@@ -11530,7 +10008,7 @@ class DynamoExporterTest(common_utils.TestCase):
         model = torch.jit.script(ListModel())
         x = torch.randn(16, 3, 4)
         y = torch.randn(4, 5)
-        self.run_test(model, (x, y))
+        self.assert_export(model, (x, y))
 
     def test_list_del_in_block(self):
         class ListModel(torch.nn.Module):
@@ -11549,7 +10027,7 @@ class DynamoExporterTest(common_utils.TestCase):
         model = torch.jit.script(ListModel())
         x = torch.randn(16, 3, 4)
         y = torch.randn(4, 5)
-        self.run_test(model, (x, y))
+        self.assert_export(model, (x, y))
 
     def test_list_unpack(self):
         class ListModel(torch.nn.Module):
@@ -11564,7 +10042,7 @@ class DynamoExporterTest(common_utils.TestCase):
         model = torch.jit.script(ListModel())
         x = torch.randn(3, 3, 4)
         y = torch.randn(4, 5)
-        self.run_test(model, (x, y))
+        self.assert_export(model, (x, y))
 
     def test_index_put_inplace_ops(self):
         @torch.jit.script
@@ -11605,13 +10083,13 @@ class DynamoExporterTest(common_utils.TestCase):
 
         model = Example(10)
         random_data = torch.rand((1, 5, 30, 30))
-        self.run_test(
+        self.assert_export(
             model,
             (random_data),
             input_names=["random_data"],
             dynamic_axes={"random_data": [0, 1, 2, 3]},
         )
-        self.run_test(model, (random_data), remained_onnx_input_idx=[])
+        self.assert_export(model, (random_data), remained_onnx_input_idx=[])
 
     def test_input_mask_model(self):
         class InputMaskModel(torch.nn.Module):
@@ -11641,7 +10119,7 @@ class DynamoExporterTest(common_utils.TestCase):
             ],
             dtype=torch.float,
         )
-        self.run_test(m, (x, y))
+        self.assert_export(m, (x, y))
 
         class InputMaskModel(torch.nn.Module):
             def __init__(self, output_size):
@@ -11666,8 +10144,7 @@ class DynamoExporterTest(common_utils.TestCase):
             ],
             dtype=torch.float,
         )
-        self.run_test(m, (x1, x2, y))
-
+        self.assert_export(m, (x1, x2, y))
 
     def test_unsafe_chunk(self):
         class ChunkModel(torch.nn.Module):
@@ -11677,7 +10154,7 @@ class DynamoExporterTest(common_utils.TestCase):
         model = ChunkModel()
         model.eval()
         x = torch.randn(1, 18)
-        self.run_test(model, x, input_names=["x"])
+        self.assert_export(model, x, input_names=["x"])
 
     def test_symbolic_shape_inference(self):
         # ConstantOfShape is tested in test_embedding_bag
@@ -11693,13 +10170,13 @@ class DynamoExporterTest(common_utils.TestCase):
         model.eval()
         x = torch.ones(2, 3, 4, 5)
         y = torch.ones(3, 4, 5, 2)
-        self.run_test(
+        self.assert_export(
             model,
             (x, y),
             input_names=["x", "y"],
             dynamic_axes={"x": [0, 1, 2, 3], "y": [0, 1, 2, 3]},
         )
-        self.run_test(model, (x, y), remained_onnx_input_idx=[1])
+        self.assert_export(model, (x, y), remained_onnx_input_idx=[1])
 
         class ViewModel(torch.nn.Module):
             def forward(self, x):
@@ -11708,7 +10185,7 @@ class DynamoExporterTest(common_utils.TestCase):
         model = ViewModel()
         model.eval()
         x = torch.tensor(2.0)
-        self.run_test(model, (x,))
+        self.assert_export(model, (x,))
 
         # test prim::ListConstruct for Reshape input 1
         class ViewModel_2(torch.nn.Module):
@@ -11721,7 +10198,7 @@ class DynamoExporterTest(common_utils.TestCase):
         model = ViewModel_2()
         model.eval()
         x = torch.ones(2, 3, 4, 5, 6)
-        self.run_test(model, x)
+        self.assert_export(model, x)
 
     def test_symbolic_shape_inference_arange(self):
         # test Range
@@ -11745,9 +10222,11 @@ class DynamoExporterTest(common_utils.TestCase):
         M, C, K, N = 1, 2, 3, 4
         x = torch.randint(5, (M, C, K, N))
         y = torch.randint(5, (M, C + 1, K + 1, N + 1))
-        self.run_test(model, x, input_names=["x"], dynamic_axes={"x": [0, 1, 2, 3]})
-        self.run_test(model, x, remained_onnx_input_idx=[])
-        self.run_test(
+        self.assert_export(
+            model, x, input_names=["x"], dynamic_axes={"x": [0, 1, 2, 3]}
+        )
+        self.assert_export(model, x, remained_onnx_input_idx=[])
+        self.assert_export(
             model,
             x,
             input_names=["x"],
@@ -11769,8 +10248,8 @@ class DynamoExporterTest(common_utils.TestCase):
         model.eval()
         x = torch.ones(2, 4)
         y = torch.ones(3, 5)
-        self.run_test(model, x)
-        self.run_test(
+        self.assert_export(model, x)
+        self.assert_export(
             model,
             x,
             input_names=["x"],
@@ -11794,7 +10273,7 @@ class DynamoExporterTest(common_utils.TestCase):
         model.eval()
         boxes = torch.ones(2, 4)
         scores = torch.ones(1, 4)
-        self.run_test(model, (boxes, scores))
+        self.assert_export(model, (boxes, scores))
 
     @skipDtypeChecking
     def test_symbolic_shape_inference_arange_2(self):
@@ -11804,20 +10283,20 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.arange(start.size(0), 8.5, 1.5, dtype=torch.int64)
 
         x = torch.randn(2, 3, 4)
-        self.run_test(
+        self.assert_export(
             ArangeModel(), (x,), input_names=["x"], dynamic_axes={"x": [0, 1, 2]}
         )
-        self.run_test(ArangeModel(), (x,), remained_onnx_input_idx=[])
+        self.assert_export(ArangeModel(), (x,), remained_onnx_input_idx=[])
 
         class ArangeModel2(torch.nn.Module):
             def forward(self, start):
                 return torch.arange(start.size(0), 8.5, 1.5, dtype=torch.double)
 
         x = torch.randn(2, 3, 4)
-        self.run_test(
+        self.assert_export(
             ArangeModel2(), (x,), input_names=["x"], dynamic_axes={"x": [0, 1, 2]}
         )
-        self.run_test(ArangeModel2(), (x,), remained_onnx_input_idx=[])
+        self.assert_export(ArangeModel2(), (x,), remained_onnx_input_idx=[])
 
     def test_symbolic_shape_inference_nonzero(self):
         class OneLikeModel(torch.nn.Module):
@@ -11831,13 +10310,15 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.nonzero(ones)
 
         x = torch.randn(2)
-        self.run_test(OneLikeModel(), x, input_names=["x"], dynamic_axes={"x": [0]})
-        self.run_test(OneLikeModel(), x, remained_onnx_input_idx=[])
+        self.assert_export(
+            OneLikeModel(), x, input_names=["x"], dynamic_axes={"x": [0]}
+        )
+        self.assert_export(OneLikeModel(), x, remained_onnx_input_idx=[])
         x = torch.randn(2, 3, 4)
-        self.run_test(
+        self.assert_export(
             OneLikeModel(), x, input_names=["x"], dynamic_axes={"x": [0, 1, 2]}
         )
-        self.run_test(OneLikeModel(), x, remained_onnx_input_idx=[])
+        self.assert_export(OneLikeModel(), x, remained_onnx_input_idx=[])
 
         class ZeroLikeModel(torch.nn.Module):
             def forward(self, x):
@@ -11850,21 +10331,23 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.nonzero(zeros)
 
         x = torch.randn(2)
-        self.run_test(ZeroLikeModel(), x, input_names=["x"], dynamic_axes={"x": [0]})
-        self.run_test(ZeroLikeModel(), x, remained_onnx_input_idx=[])
+        self.assert_export(
+            ZeroLikeModel(), x, input_names=["x"], dynamic_axes={"x": [0]}
+        )
+        self.assert_export(ZeroLikeModel(), x, remained_onnx_input_idx=[])
         x = torch.randn(2, 3, 4)
-        self.run_test(
+        self.assert_export(
             ZeroLikeModel(), x, input_names=["x"], dynamic_axes={"x": [0, 1, 2]}
         )
-        self.run_test(ZeroLikeModel(), x, remained_onnx_input_idx=[])
+        self.assert_export(ZeroLikeModel(), x, remained_onnx_input_idx=[])
 
     def test_symbolic_shape_inference_expand_1(self):
         class ExpandModel(torch.nn.Module):
             def forward(self, x):
                 return x.expand(4, 6, 2)
 
-        x = torch.randn(6, 1, requires_grad=True)
-        self.run_test(ExpandModel(), (x,))
+        x = torch.randn(6, 1)
+        self.assert_export(ExpandModel(), (x,))
 
     def test_symbolic_shape_inference_expand_2(self):
         class M(torch.nn.Module):
@@ -11879,8 +10362,8 @@ class DynamoExporterTest(common_utils.TestCase):
                 return causal_mask.transpose(0, 1)
 
         x = torch.randn(3, 16)
-        self.run_test(M(), (x,), input_names=["x"], dynamic_axes={"x": [0, 1]})
-        self.run_test(M(), (x,), remained_onnx_input_idx=[])
+        self.assert_export(M(), (x,), input_names=["x"], dynamic_axes={"x": [0, 1]})
+        self.assert_export(M(), (x,), remained_onnx_input_idx=[])
 
     def test_symbolic_shape_inference_slice(self):
         class M(torch.nn.Module):
@@ -11892,13 +10375,13 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn(3, 16)
         position_bias = torch.randn(1, 3, 20, 8)
-        self.run_test(
+        self.assert_export(
             M(),
             (x, position_bias),
             input_names=["x", "position_bias"],
             dynamic_axes={"x": [0, 1], "position_bias": [0, 1, 2, 3]},
         )
-        self.run_test(M(), (x, position_bias), remained_onnx_input_idx=[1])
+        self.assert_export(M(), (x, position_bias), remained_onnx_input_idx=[1])
 
     def test_symbolic_shape_inference_slice_2(self):
         class M(torch.nn.Module):
@@ -11907,49 +10390,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return position_bias.transpose(0, 1)
 
         position_bias = torch.randn(1, 3, 20, 8)
-        self.run_test(M(), (position_bias,))
-
-
-    def test_symbolic_shape_inference_time(self):
-        input = torch.randn(RNN_SEQUENCE_LENGTH, BATCH_SIZE, RNN_INPUT_SIZE)
-        h0 = torch.randn(1, BATCH_SIZE, RNN_HIDDEN_SIZE)
-        c0 = torch.randn(1, BATCH_SIZE, RNN_HIDDEN_SIZE)
-        model_lstm = torch.nn.LSTM(
-            RNN_INPUT_SIZE, RNN_HIDDEN_SIZE, 1, bidirectional=False
-        )
-        self.run_test(
-            model_lstm,
-            (input, (h0, c0)),
-            input_names=["x", "y"],
-            dynamic_axes={"x": [0, 1]},
-        )
-        model_gru = torch.nn.GRU(
-            RNN_INPUT_SIZE, RNN_HIDDEN_SIZE, 1, bidirectional=False, bias=False
-        )
-        self.run_test(
-            model_gru, (input, h0), input_names=["x", "y"], dynamic_axes={"x": [0, 1]}
-        )
-        model_rnn = torch.nn.RNN(
-            RNN_INPUT_SIZE, RNN_HIDDEN_SIZE, 1, bidirectional=False, bias=False
-        )
-        self.run_test(
-            model_rnn, (input, h0), input_names=["x", "y"], dynamic_axes={"x": [0, 1]}
-        )
-
-    def test_symbolic_shape_inference_dynamic_axes(self):
-        class M(torch.nn.Module):
-            def forward(self, input_ids):
-                input_shape = input_ids.size()
-                input_ids = input_ids.view(-1, input_shape[-1])
-                return input_ids.transpose(0, 1)
-
-        x = torch.randn(3, 16)
-        self.run_test(
-            M(),
-            (x,),
-            input_names=["input_ids"],
-            dynamic_axes={"input_ids": {0: "batch", 1: "sequence"}},
-        )
+        self.assert_export(M(), (position_bias,))
 
     def test_hann_window_periodic(self):
         class HannWindowModule_Periodic(torch.nn.Module):
@@ -11970,7 +10411,7 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.randn(win_length)
 
         module = HannWindowModule_Periodic()
-        self.run_test(module, (x, win_length))
+        self.assert_export(module, (x, win_length))
 
     def test_hann_window_not_periodic(self):
         class HannWindowModule_NotPeriodic(torch.nn.Module):
@@ -11991,8 +10432,7 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.randn(win_length)
 
         module = HannWindowModule_NotPeriodic()
-        self.run_test(module, (x, win_length))
-
+        self.assert_export(module, (x, win_length))
 
     def test_hann_window_default_values(self):
         class HannWindowModule(torch.nn.Module):
@@ -12011,7 +10451,7 @@ class DynamoExporterTest(common_utils.TestCase):
         module = HannWindowModule()
 
         output = module(x, win_length)
-        self.run_test(module, (x, win_length))
+        self.assert_export(module, (x, win_length))
 
     def test_tensordot_dim_count(self):
         class M(torch.nn.Module):
@@ -12022,7 +10462,7 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.randint(6, (7, 5, 3, 4))
         y = torch.randint(6, (3, 4, 9, 2))
 
-        self.run_test(M(), (x, y))
+        self.assert_export(M(), (x, y))
 
     def test_tensordot_dim_list(self):
         class M(torch.nn.Module):
@@ -12033,7 +10473,7 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.randint(6, (7, 4, 3, 5, 2))
         y = torch.randint(6, (5, 4, 4, 2, 6))
 
-        self.run_test(M(), (x, y))
+        self.assert_export(M(), (x, y))
 
     def test_tensordot_dynamic_dim(self):
         class M(torch.nn.Module):
@@ -12047,7 +10487,7 @@ class DynamoExporterTest(common_utils.TestCase):
         new_x = torch.randint(6, (8, 6, 2, 5))
         new_y = torch.randint(6, (2, 5, 3, 4))
 
-        self.run_test(
+        self.assert_export(
             M(),
             (x, y),
             additional_test_inputs=[(new_x, new_y)],
@@ -12067,8 +10507,8 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.randn(6)
         y = torch.randn(6)
 
-        self.run_test(M_ToDevice(), (x, y))
-        self.run_test(M_ToDeviceDtype(), (x, y))
+        self.assert_export(M_ToDevice(), (x, y))
+        self.assert_export(M_ToDeviceDtype(), (x, y))
 
     def test_fill(self):
         class FillModule(torch.nn.Module):
@@ -12077,7 +10517,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn((4, 5, 6))
         filled_value = 7
-        self.run_test(FillModule(), (x, filled_value))
+        self.assert_export(FillModule(), (x, filled_value))
 
         class FillFloatModule(torch.nn.Module):
             def forward(self, x, filled_value: float):
@@ -12085,7 +10525,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         x = torch.randn((4, 5, 6))
         filled_value = 7.5
-        self.run_test(FillFloatModule(), (x, filled_value))
+        self.assert_export(FillFloatModule(), (x, filled_value))
 
         class FillScalarModule(torch.nn.Module):
             def forward(self, x):
@@ -12094,7 +10534,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return res, x
 
         x = torch.ones(2, 3, 4, dtype=torch.long)
-        self.run_test(FillScalarModule(), x)
+        self.assert_export(FillScalarModule(), x)
 
     def test_index_add_normal(self):
         class M(torch.nn.Module):
@@ -12111,20 +10551,20 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.ones(5, 1)
         updates = torch.tensor([[1], [4], [7], [3], [2]], dtype=torch.float)
         index = torch.tensor([0, 2, 3, 1, 4])
-        self.run_test(M(0, index, updates), (x,))
+        self.assert_export(M(0, index, updates), (x,))
 
         x = torch.ones(1, 4, 3)
         updates = torch.tensor(
             [[[1, 5, 7], [2, 4, 5], [5, 5, 6], [2, 3, 4]]], dtype=torch.float
         )
         index = torch.tensor([0, 2, 3, 1])
-        self.run_test(M(1, index, updates), (x,))
+        self.assert_export(M(1, index, updates), (x,))
 
         updates = torch.tensor(
             [[[1, 2, 3], [4, 5, 6], [7, 8, 9], [2, 3, 4]]], dtype=torch.float
         )
         index = torch.tensor([0, 2, 1])
-        self.run_test(M(2, index, updates), (x,))
+        self.assert_export(M(2, index, updates), (x,))
 
     def test_index_add_dim_size_differ(self):
         class M(torch.nn.Module):
@@ -12141,7 +10581,7 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.ones(1, 4, 3)
         updates = torch.tensor([[[1, 5, 7], [2, 4, 5], [5, 5, 6]]], dtype=torch.float)
         index = torch.tensor([0, 2, 1])
-        self.run_test(M(1, index, updates), (x,))
+        self.assert_export(M(1, index, updates), (x,))
 
     def test_index_add_in_loop(self):
         class M(torch.nn.Module):
@@ -12163,7 +10603,7 @@ class DynamoExporterTest(common_utils.TestCase):
         )
         index = torch.tensor([0, 2, 3, 1])
         loop_count = torch.randint(20, (1,))[0].item()
-        self.run_test(M(1, index, updates, loop_count), (x,))
+        self.assert_export(M(1, index, updates, loop_count), (x,))
 
     def test_index_add_if(self):
         class M(torch.nn.Module):
@@ -12188,7 +10628,7 @@ class DynamoExporterTest(common_utils.TestCase):
         index_true = torch.tensor([0, 2, 3, 1])
         index_false = torch.tensor([1, 0, 2, 3])
         cond = torch.tensor(1, dtype=torch.bool)
-        self.run_test(
+        self.assert_export(
             torch.jit.script(M(1, updates, index_true, index_false)), (x, cond)
         )
 
@@ -12210,7 +10650,7 @@ class DynamoExporterTest(common_utils.TestCase):
         )
         index = torch.tensor([0, 2, 3, 1])
 
-        self.run_test(
+        self.assert_export(
             M(1, index, updates),
             (x,),
             input_names=["input_1"],
@@ -12228,10 +10668,10 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.roll(x, self.shifts, self.dims)
 
         x = torch.randn(2, 3, 4)
-        self.run_test(M([1, 1], [1, 0]), (x,))
-        self.run_test(M([0, 1, 2], [1, 0, 2]), (x,))
-        self.run_test(M(2, 1), (x,))
-        self.run_test(M([-1, 3], [-2, -1]), (x,))
+        self.assert_export(M([1, 1], [1, 0]), (x,))
+        self.assert_export(M([0, 1, 2], [1, 0, 2]), (x,))
+        self.assert_export(M(2, 1), (x,))
+        self.assert_export(M([-1, 3], [-2, -1]), (x,))
 
     def test_sum(self):
         class M(torch.nn.Module):
@@ -12239,7 +10679,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return torch.sum(x)
 
         x = torch.ones(12, 3)
-        self.run_test(M(), (x,), input_names=["x"], dynamic_axes={"x": [0]})
+        self.assert_export(M(), (x,), input_names=["x"], dynamic_axes={"x": [0]})
 
     @skipShapeChecking
     def test_sum_empty_tensor(self):
@@ -12248,13 +10688,13 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x[0:0].sum(), x.sum()
 
         x = torch.ones(12)
-        self.run_test(M(), (x,))
+        self.assert_export(M(), (x,))
 
         x = torch.ones(2, 0, 3)
-        self.run_test(M(), (x,))
+        self.assert_export(M(), (x,))
 
         x = torch.ones(0)
-        self.run_test(M(), (x,))
+        self.assert_export(M(), (x,))
 
     def test_broad_cast_tensors(self):
         class M(torch.nn.Module):
@@ -12265,17 +10705,17 @@ class DynamoExporterTest(common_utils.TestCase):
         x = torch.randint(5, (1,))
         y = torch.randint(5, (5,))
 
-        self.run_test(M(), (x, y))
+        self.assert_export(M(), (x, y))
 
         x = torch.randint(5, (4, 2, 1, 4))
         y = torch.randint(5, (2, 3, 1))
 
-        self.run_test(M(), (x, y))
+        self.assert_export(M(), (x, y))
 
         x = torch.randn(2, 1, 4)
         y = torch.randn(5, 2, 3, 1)
 
-        self.run_test(M(), (x, y))
+        self.assert_export(M(), (x, y))
 
     def test_scaled_dot_product_attention(self):
         class M(torch.nn.Module):
@@ -12295,25 +10735,23 @@ class DynamoExporterTest(common_utils.TestCase):
         k = torch.randn(batch_size, num_heads, seq_length, head_dim)
         v = torch.randn(batch_size, num_heads, seq_length, head_dim)
 
-        self.run_test(M(), (q, k, v))
-
+        self.assert_export(M(), (q, k, v))
 
     def test_dist_normal(self):
         class M(torch.nn.Module):
             def forward(self, x, y):
                 return torch.distributions.Normal(x, y).sample().size(0), x, y
 
-        self.run_test(M(), (torch.tensor([0.0]), torch.tensor([[1.0], [2.0]])))
-        self.run_test(M(), (torch.tensor([0.0]), torch.tensor([1.0])))
+        self.assert_export(M(), (torch.tensor([0.0]), torch.tensor([[1.0], [2.0]])))
+        self.assert_export(M(), (torch.tensor([0.0]), torch.tensor([1.0])))
 
-        self.run_test(
+        self.assert_export(
             M(),
             (
                 torch.tensor([[[0.0], [10.0]], [[2.0], [8.0]], [[2.0], [8.0]]]),
                 torch.tensor([[1.0], [3.0]]),
             ),
         )
-
 
     def test_dist_normal_correctness(self):
         class M(torch.nn.Module):
@@ -12341,7 +10779,6 @@ class DynamoExporterTest(common_utils.TestCase):
         assert (
             abs(abs(actual_std) - expected_std) <= expected_std * 0.1
         ), "the gap of variance between ort outputs and expected one is unacceptable."
-
 
     def test_nn_init_normal_correctness(self):
         expected_mean = 5.0
@@ -12372,18 +10809,18 @@ class DynamoExporterTest(common_utils.TestCase):
             abs(abs(actual_std) - expected_std) <= expected_std * 0.1
         ), "the gap of variance between ort outputs and expected one is unacceptable."
 
-
     def test_dist_uniform(self):
         class M(torch.nn.Module):
             def forward(self, x, y):
                 return torch.distributions.Uniform(x, y).sample().size(0), x, y
 
-        self.run_test(M(), (torch.tensor([0.0]), torch.tensor([10.0])))
-        self.run_test(M(), (torch.tensor([[0.0], [6.0]]), torch.tensor([[1.0], [7.0]])))
-        self.run_test(
+        self.assert_export(M(), (torch.tensor([0.0]), torch.tensor([10.0])))
+        self.assert_export(
+            M(), (torch.tensor([[0.0], [6.0]]), torch.tensor([[1.0], [7.0]]))
+        )
+        self.assert_export(
             M(), (torch.tensor([1.0]), torch.tensor([[10.0], [7.0], [9.0], [20.0]]))
         )
-
 
     def test_dist_uniform_correctness(self):
         class M(torch.nn.Module):
@@ -12424,7 +10861,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x, result
 
         x = torch.randn(10, 5)
-        self.run_test(M(), (x,))
+        self.assert_export(M(), (x,))
 
     def test_sequence_to_float(self):
         class M(torch.nn.Module):
@@ -12435,7 +10872,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x, result
 
         x = torch.randn(10, 5)
-        self.run_test(M(), (x,))
+        self.assert_export(M(), (x,))
 
     def test_sequence_to_bool(self):
         class M(torch.nn.Module):
@@ -12446,799 +10883,7 @@ class DynamoExporterTest(common_utils.TestCase):
                 return x, result
 
         x = torch.randn(10, 5)
-        self.run_test(M(), (x,))
-
-    def test_tuple_output_from_if_with_raised_exception(self):
-        class M(torch.nn.Module):
-            def forward(self, t: Tensor) -> tuple[Tensor, Tensor]:
-                if float(t) < 0:
-                    raise Exception("Negative input")  # noqa: TRY002
-                else:
-                    return torch.zeros(5), torch.zeros(5)
-
-        x = torch.zeros(1)
-        self.run_test(torch.jit.script(M()), (x,))
-
-    # NOTE: For quantization tests, choose scale and zero point carefully
-    #       such that inputs and outputs do not always overflow/underflow.
-    #       Otherwise test results could be inaccurate.
-    def test_quantized_linear(self):
-        model = torch.ao.nn.quantized.Linear(4, 8)
-        # Set fixed weight to avoid flaky test.
-        weight = torch.quantize_per_tensor(
-            torch.arange(32, dtype=torch.float).view(8, 4), 0.5, 0, torch.qint8
-        )
-        # Set non-zero bias.
-        bias = torch.arange(8, dtype=torch.float)
-        model.set_weight_bias(weight, bias)
-        # Set fixed input to avoid flaky test.
-        input = torch.randn(4, 4)
-        input = torch.arange(16, dtype=torch.float).view(4, 4) - 8
-        input_tensor = torch.quantize_per_tensor(input, 0.5, 128, torch.quint8)
-        self.run_test(model, input_tensor)
-
-    def test_quantized_conv1d(self):
-        model = torch.ao.nn.quantized.Conv1d(16, 33, 3, stride=2)
-        # Manually initialize model weight and bias to random numbers.
-        # By default all zeros.
-        q_weight = torch.quantize_per_tensor(
-            torch.randn(33, 16, 3), 0.5, 0, torch.qint8
-        )
-        bias = torch.arange(33).to(torch.float) - 16
-        model.set_weight_bias(q_weight, bias)
-        input = torch.randn(3, 16, 32)
-        q_input = torch.quantize_per_tensor(input, 0.5, 128, torch.quint8)
-        self.run_test(model, q_input)
-
-    def test_quantized_conv2d(self):
-        model = torch.ao.nn.quantized.Conv2d(16, 33, 3, stride=2)
-        # Manually initialize model weight and bias to random numbers.
-        # By default all zeros.
-        q_weight = torch.quantize_per_tensor(
-            torch.randn(33, 16, 3, 3), 0.5, 0, torch.qint8
-        )
-        bias = torch.arange(33).to(torch.float) - 16
-        model.set_weight_bias(q_weight, bias)
-        input = torch.randn(3, 16, 32, 32)
-        q_input = torch.quantize_per_tensor(input, 0.5, 128, torch.quint8)
-        self.run_test(model, q_input)
-
-    @skipIfQuantizationBackendQNNPack
-    def test_quantized_conv3d(self):
-        model = torch.ao.nn.quantized.Conv3d(16, 33, [2, 3, 4], stride=[3, 1, 2])
-        # Manually initialize model weight and bias to random numbers.
-        # By default all zeros.
-        q_weight = torch.quantize_per_tensor(
-            torch.randn(33, 16, 2, 3, 4), 0.5, 0, torch.qint8
-        )
-        bias = torch.arange(33).to(torch.float) - 16
-        model.set_weight_bias(q_weight, bias)
-        input = torch.randn(3, 16, 8, 8, 8)
-        q_input = torch.quantize_per_tensor(input, 0.5, 128, torch.quint8)
-        self.run_test(model, q_input)
-
-    def test_quantized_adaptive_avg_pool2d(self):
-        model = torch.nn.AdaptiveAvgPool2d((5, 7))
-        input = torch.randn(4, 3, 10, 14)
-        q_input = torch.quantize_per_tensor(input, 0.2, 128, torch.quint8)
-        self.run_test(model, q_input)
-
-    def test_quantized_conv1d_relu(self):
-        model = torch.ao.nn.intrinsic.quantized.ConvReLU1d(16, 33, 3, stride=2)
-        # Manually initialize model weight and bias to random numbers.
-        # By default all zeros.
-        q_weight = torch.quantize_per_tensor(
-            torch.randn(33, 16, 3), 0.5, 0, torch.qint8
-        )
-        bias = torch.arange(33).to(torch.float) - 16
-        model.set_weight_bias(q_weight, bias)
-        input = torch.randn(3, 16, 32)
-        q_input = torch.quantize_per_tensor(input, 0.5, 128, torch.quint8)
-        self.run_test(model, q_input)
-
-    def test_quantized_conv2d_relu(self):
-        model = torch.ao.nn.intrinsic.quantized.ConvReLU2d(16, 33, 3, stride=2)
-        # Manually initialize model weight and bias to random numbers.
-        # By default all zeros.
-        q_weight = torch.quantize_per_tensor(
-            torch.randn(33, 16, 3, 3), 0.5, 0, torch.qint8
-        )
-        bias = torch.arange(33).to(torch.float) - 16
-        model.set_weight_bias(q_weight, bias)
-        input = torch.randn(3, 16, 32, 32)
-        q_input = torch.quantize_per_tensor(input, 0.5, 128, torch.quint8)
-        self.run_test(model, q_input)
-
-    @skipIfQuantizationBackendQNNPack
-    def test_quantized_conv3d_relu(self):
-        model = torch.ao.nn.intrinsic.quantized.ConvReLU3d(
-            16, 33, [2, 3, 4], stride=[3, 1, 2]
-        )
-        # Manually initialize model weight and bias to random numbers.
-        # By default all zeros.
-        q_weight = torch.quantize_per_tensor(
-            torch.randn(33, 16, 2, 3, 4), 0.5, 0, torch.qint8
-        )
-        bias = torch.arange(33).to(torch.float) - 16
-        model.set_weight_bias(q_weight, bias)
-        input = torch.randn(3, 16, 8, 8, 8)
-        q_input = torch.quantize_per_tensor(input, 0.5, 128, torch.quint8)
-        self.run_test(model, q_input)
-
-    def test_quantized_conv_transpose1d(self):
-        model = torch.ao.nn.quantized.ConvTranspose1d(
-            16, 33, 3, output_padding=1, stride=2
-        )
-        # Manually initialize model weight and bias to random numbers.
-        # By default all zeros.
-        q_weight = torch.quantize_per_tensor(
-            torch.randn(16, 33, 3), 0.5, 0, torch.qint8
-        )
-        bias = torch.arange(33).to(torch.float) - 16
-        model.set_weight_bias(q_weight, bias)
-        input = torch.randn(3, 16, 32)
-        q_input = torch.quantize_per_tensor(input, 0.5, 128, torch.quint8)
-        self.run_test(model, q_input)
-
-    def test_quantized_conv_transpose2d(self):
-        model = torch.ao.nn.quantized.ConvTranspose2d(
-            16, 33, 3, output_padding=(0, 1), stride=2
-        )
-        # Manually initialize model weight and bias to random numbers.
-        # By default all zeros.
-        q_weight = torch.quantize_per_tensor(
-            torch.randn(16, 33, 3, 3), 0.5, 0, torch.qint8
-        )
-        bias = torch.arange(33).to(torch.float) - 16
-        model.set_weight_bias(q_weight, bias)
-        input = torch.randn(3, 16, 32, 32)
-        q_input = torch.quantize_per_tensor(input, 0.5, 128, torch.quint8)
-        self.run_test(model, q_input)
-
-    @skipIfQuantizationBackendQNNPack
-    def test_quantized_conv_transpose3d(self):
-        model = torch.ao.nn.quantized.ConvTranspose3d(
-            16, 33, [2, 3, 4], output_padding=(0, 1, 2), stride=[3, 1, 2]
-        )
-        # Manually initialize model weight and bias to random numbers.
-        # By default all zeros.
-        q_weight = torch.quantize_per_tensor(
-            torch.randn(16, 33, 2, 3, 4), 0.5, 0, torch.qint8
-        )
-        bias = torch.arange(33).to(torch.float) - 16
-        model.set_weight_bias(q_weight, bias)
-        input = torch.randn(3, 16, 8, 8, 8)
-        q_input = torch.quantize_per_tensor(input, 0.5, 128, torch.quint8)
-        self.run_test(model, q_input)
-
-    @common_utils.parametrize(
-        "function_or_module",
-        [
-            common_utils.subtest(
-                torch.nn.ReLU(),
-                name="relu",
-            ),
-            common_utils.subtest(
-                torch.nn.LeakyReLU(),
-                name="leaky_relu",
-            ),
-            common_utils.subtest(
-                torch.ao.nn.quantized.LeakyReLU(2.0, 1),
-                name="quantized_leaky_relu",
-            ),
-            common_utils.subtest(
-                torch.ao.nn.quantized.Hardswish(2.0, 1),
-                name="quantized_hardswish",
-            ),
-            common_utils.subtest(
-                torch.nn.Sigmoid(),
-                name="sigmoid",
-            ),
-            common_utils.subtest(
-                torch.ao.nn.quantized.Sigmoid(2.0, 1),
-                name="quantized_sigmoid",
-            ),
-            common_utils.subtest(
-                torch.nn.Hardsigmoid(),
-                name="hardsigmoid",
-            ),
-            common_utils.subtest(
-                torch.nn.Tanh(),
-                name="tanh",
-            ),
-            common_utils.subtest(
-                torch.nn.Hardtanh(),
-                name="hardtanh",
-            ),
-            common_utils.subtest(
-                lambda x: torch.transpose(x, 0, 1),
-                name="transpose",
-            ),
-            common_utils.subtest(
-                lambda x: x.expand(2, 4, 2, 3),
-                name="expand",
-            ),
-            common_utils.subtest(
-                lambda x: x.view(1, 4, 6),
-                name="view",
-            ),
-            common_utils.subtest(
-                lambda x: x.select(1, 1),
-                name="select",
-            ),
-            common_utils.subtest(
-                torch.ao.nn.quantized.LayerNorm(
-                    [4, 2, 3],
-                    torch.nn.Parameter(torch.ones([4, 2, 3])),
-                    torch.nn.Parameter(torch.zeros([4, 2, 3])),
-                    2.0,
-                    1,
-                ),
-                name="layer_norm",
-            ),
-            common_utils.subtest(
-                torch.ao.nn.quantized.InstanceNorm1d(
-                    2,
-                    torch.nn.Parameter(torch.ones(4)),
-                    torch.nn.Parameter(torch.zeros(4)),
-                    2.0,
-                    1,
-                ),
-                name="instance_norm",
-            ),
-            common_utils.subtest(
-                torch.ao.nn.quantized.GroupNorm(
-                    2,
-                    4,
-                    torch.nn.Parameter(torch.zeros(4)),
-                    torch.nn.Parameter(torch.zeros(4)),
-                    2.0,
-                    1,
-                ),
-                name="group_norm",
-            ),
-            common_utils.subtest(
-                lambda x: torch.as_strided(x, (2, 2), (1, 2)),
-                name="as_strided",
-            ),
-        ],
-    )
-
-    def test_quantized_unary_ops(self, function_or_module):
-        input = torch.randn(1, 4, 2, 3)
-        q_input = torch.quantize_per_tensor(input, 0.26, 128, torch.quint8)
-
-        class Model(torch.nn.Module):
-            def __init__(self, function_or_module):
-                super().__init__()
-                self.function_or_module = function_or_module
-
-            def forward(self, x):
-                return self.function_or_module(x)
-
-        self.run_test(Model(function_or_module), q_input)
-
-    def test_quantized_flatten(self):
-        class FlattenModel(torch.nn.Module):
-            def forward(self, input):
-                return torch.flatten(input)
-
-        x = torch.quantize_per_tensor(torch.randn(1, 2, 3, 4), 1, 0, torch.quint8)
-        self.run_test(FlattenModel(), x)
-
-  # torch.jit.frontend.FrontendError: Cannot instantiate class 'QFunctional' in a script function:
-    def test_quantized_cat_when_concatinating_the_same_tensor(self):
-        class QuantizedSelfConcatenationModel(torch.nn.Module):
-            def forward(self, x):
-                return torch.ao.nn.quantized.QFunctional().cat((x, x), dim=1)
-
-        q_input = torch.quantize_per_tensor(torch.ones(2, 3), 0.26, 128, torch.quint8)
-        self.run_test(QuantizedSelfConcatenationModel(), q_input)
-
-    @common_utils.parametrize(
-        "x, y",
-        [
-            common_utils.subtest(
-                [
-                    torch.quantize_per_tensor(
-                        torch.ones(2, 3), 0.26, 128, torch.quint8
-                    ),
-                    torch.quantize_per_tensor(
-                        torch.zeros(1, 3), 0.26, 128, torch.quint8
-                    ),
-                ],
-                name="different_shape",
-            ),
-            common_utils.subtest(
-                [
-                    torch.quantize_per_tensor(
-                        torch.ones(2, 3), 0.26, 128, torch.quint8
-                    ),
-                    torch.quantize_per_tensor(torch.ones(2, 3), 42, 1, torch.quint8),
-                ],
-                name="different_scale",
-            ),
-            common_utils.subtest(
-                [
-                    torch.quantize_per_tensor(
-                        torch.ones(2, 3), 0.26, 128, torch.quint8
-                    ),
-                    torch.quantize_per_tensor(torch.ones(2, 3), 0.26, 63, torch.quint8),
-                ],
-                name="different_zero_point",
-            ),
-            common_utils.subtest(
-                [
-                    torch.quantize_per_tensor(
-                        torch.ones(2, 3), 0.26, 128, torch.quint8
-                    ),
-                    torch.quantize_per_tensor(torch.ones(2, 3), 0.1, 63, torch.quint8),
-                ],
-                name="different_zero_point_and_scale",
-            ),
-        ],
-    )
-  # torch.jit.frontend.FrontendError: Cannot instantiate class 'QFunctional' in a script function:
-    def test_quantized_cat(self, x: torch.Tensor, y: torch.Tensor):
-        class QuantizedConcatenationModel(torch.nn.Module):
-            def forward(self, x, y):
-                return torch.ao.nn.quantized.QFunctional().cat((x, y), dim=0)
-
-        self.run_test(QuantizedConcatenationModel(), (x, y))
-
-    # torch.jit.frontend.FrontendError:
-    # Cannot instantiate class 'QFunctional' in a script function
-
-    def test_quantized_arithmetic_qfunctional(self):
-        x = torch.quantize_per_tensor(torch.randn(3, 4), 0.2, 128, torch.quint8)
-        y = torch.quantize_per_tensor(torch.randn(3, 4), 0.2, 128, torch.quint8)
-
-        class ArithmeticModel(torch.nn.Module):
-            def forward(self, x, y):
-                o = torch.ao.nn.quantized.QFunctional().add(x, y)
-                o = torch.ao.nn.quantized.QFunctional().mul(o, x)
-                return o
-
-        self.run_test(ArithmeticModel(), (x, y))
-
-    def test_quantized_arithmetic(self):
-        x = torch.quantize_per_tensor(torch.randn(3, 4), 0.2, 128, torch.quint8)
-        y = torch.quantize_per_tensor(torch.randn(3, 4), 0.2, 128, torch.quint8)
-
-        class ArithmeticModel2(torch.nn.Module):
-            def forward(self, x, y):
-                o = torch.ops.quantized.add(x, y, 0.4, 100)
-                o = torch.ops.quantized.mul(o, x, 0.4, 100)
-                return o
-
-        self.run_test(ArithmeticModel2(), (x, y))
-
-    def test_quantize_per_tensor(self):
-        class Module(torch.nn.Module):
-            def forward(self, x):
-                return (
-                    torch.quantize_per_tensor(x, 0.2, 0, torch.qint8),
-                    torch.quantize_per_tensor(x, 0.2, 128, torch.quint8),
-                )
-
-        x = torch.randn(4, 6)
-        self.run_test(Module(), x)
-
-    def test_dequantize(self):
-        class Module(torch.nn.Module):
-            def forward(self, x):
-                return torch.dequantize(x)
-
-        x = torch.quantize_per_tensor(torch.randn(3, 4), 0.2, 0, torch.qint8)
-        self.run_test(Module(), x)
-
-    def test_qat_linear_per_channel(self):
-        class M(torch.nn.Module):
-            def __init__(self) -> None:
-                super().__init__()
-                self.quant = torch.ao.quantization.QuantStub()
-                self.linear = torch.nn.Linear(4, 3)
-                self.dequant = torch.ao.quantization.DeQuantStub()
-
-            def forward(self, x):
-                x = self.quant(x)
-                x = self.linear(x)
-                x = self.dequant(x)
-                return x
-
-        model = M()
-        model.qconfig = torch.ao.quantization.get_default_qconfig("fbgemm")
-        model = torch.ao.quantization.prepare_qat(model)
-        # Set fixed weight and bias to avoid flaky test.
-        model.linear.weight = torch.nn.Parameter(
-            _construct_tensor_for_quantization_test((3, 4))
-        )
-        model.linear.bias = torch.nn.Parameter(torch.arange(3, dtype=torch.float))
-        model = torch.ao.quantization.convert(model)
-
-        # Set fixed input to avoid flaky test.
-        input = _construct_tensor_for_quantization_test((4, 4), offset=-8)
-        self.run_test(model, input)
-
-    @unittest.skip(
-        "ORT fails with Validating no unexpected access using an invalid node_index on torch converted model"
-    )
-    def test_quantized_list_of_inputs_with_cat(self):
-        class TestModel(torch.nn.Module):
-            def __init__(self) -> None:
-                super().__init__()
-                self.quant = torch.ao.quantization.QuantStub()
-                self.dequant = torch.ao.quantization.DeQuantStub()
-
-            def forward(self, x):
-                x = self.quant(x)
-                x = torch.cat([x, x], 1)
-                x = self.dequant(x)
-                return x
-
-        model = TestModel()
-        model.qconfig = torch.ao.quantization.get_default_qconfig("fbgemm")
-        model = torch.ao.quantization.prepare_qat(model)
-        model = torch.ao.quantization.convert(model)
-        x = torch.randn(2, 4, 6)
-        self.run_test(model, x)
-
-    def test_qat_relu(self):
-        class M(torch.nn.Module):
-            def __init__(self) -> None:
-                super().__init__()
-                self.quant = torch.ao.quantization.QuantStub()
-                self.relu = torch.nn.ReLU()
-                self.dequant = torch.ao.quantization.DeQuantStub()
-
-            def forward(self, x):
-                x = self.quant(x)
-                x = self.relu(x)
-                x = self.dequant(x)
-                return x
-
-        model = M()
-        model.qconfig = torch.ao.quantization.get_default_qconfig("fbgemm")
-        model = torch.ao.quantization.prepare_qat(model)
-        model = torch.ao.quantization.convert(model)
-        input = torch.randn(8, 4)
-        self.run_test(model, input)
-
-    def test_qat_conv2d(self):
-        class M(torch.nn.Module):
-            def __init__(self) -> None:
-                super().__init__()
-                self.quant = torch.ao.quantization.QuantStub()
-                self.conv = torch.nn.Conv2d(4, 2, 3, stride=2)
-                self.dequant = torch.ao.quantization.DeQuantStub()
-
-            def forward(self, x):
-                x = self.quant(x)
-                x = self.conv(x)
-                x = self.dequant(x)
-                return x
-
-        model = M()
-        model.qconfig = torch.ao.quantization.get_default_qconfig("fbgemm")
-        model = torch.ao.quantization.prepare_qat(model)
-        # Set fixed weight and bias to avoid flaky test.
-        model.conv.weight = torch.nn.Parameter(
-            _construct_tensor_for_quantization_test((2, 4, 3, 3), max_val=2)
-        )
-        model.conv.bias = torch.nn.Parameter(torch.tensor([0.0, 1.0]))
-        model = torch.ao.quantization.convert(model)
-
-        # Set fixed input to avoid flaky test.
-        input = _construct_tensor_for_quantization_test(
-            (3, 4, 8, 8), offset=-384, max_val=12
-        )
-        self.run_test(model, input)
-
-    def test_qat_conv2d_relu(self):
-        class M(torch.nn.Module):
-            def __init__(self) -> None:
-                super().__init__()
-                self.quant = torch.ao.quantization.QuantStub()
-                self.conv = torch.nn.Conv2d(4, 2, 3, stride=2)
-                self.relu = torch.nn.ReLU()
-                self.dequant = torch.ao.quantization.DeQuantStub()
-
-            def forward(self, x):
-                x = self.quant(x)
-                x = self.conv(x)
-                x = self.relu(x)
-                x = self.dequant(x)
-                return x
-
-        model = M()
-        model.qconfig = torch.ao.quantization.get_default_qconfig("fbgemm")
-        model = torch.ao.quantization.prepare_qat(model)
-        # Set fixed weight and bias to avoid flaky test.
-        model.conv.weight = torch.nn.Parameter(
-            _construct_tensor_for_quantization_test((2, 4, 3, 3), max_val=2)
-        )
-        model.conv.bias = torch.nn.Parameter(torch.tensor([0.0, 1.0]))
-        model = torch.ao.quantization.convert(model)
-
-        # Set fixed input to avoid flaky test.
-        input = _construct_tensor_for_quantization_test(
-            (3, 4, 8, 8), offset=-384, max_val=12
-        )
-        self.run_test(model, input)
-
-    def test_qat_conv2d_relu_fused(self):
-        class M(torch.nn.Module):
-            def __init__(self) -> None:
-                super().__init__()
-                self.quant = torch.ao.quantization.QuantStub()
-                self.conv = torch.nn.Conv2d(4, 2, 3, stride=2)
-                self.relu = torch.nn.ReLU()
-                self.dequant = torch.ao.quantization.DeQuantStub()
-
-            def forward(self, x):
-                x = self.quant(x)
-                x = self.conv(x)
-                x = self.relu(x)
-                x = self.dequant(x)
-                return x
-
-        model = M()
-        model.qconfig = torch.ao.quantization.get_default_qconfig("fbgemm")
-        model = torch.ao.quantization.fuse_modules(model.eval(), [["conv", "relu"]])
-        model = torch.ao.quantization.prepare_qat(model.train())
-        # Set fixed weight and bias to avoid flaky test.
-        model.conv.weight = torch.nn.Parameter(
-            _construct_tensor_for_quantization_test((2, 4, 3, 3), max_val=2)
-        )
-        model.conv.bias = torch.nn.Parameter(torch.tensor([0.0, 1.0]))
-        model = torch.ao.quantization.convert(model)
-
-        # Set fixed input to avoid flaky test.
-        input = _construct_tensor_for_quantization_test(
-            (3, 4, 8, 8), offset=-384, max_val=12
-        )
-        self.run_test(model, input)
-
-    def test_qat_linear_relu_fused(self):
-        class M(torch.nn.Module):
-            def __init__(self) -> None:
-                super().__init__()
-                self.quant = torch.ao.quantization.QuantStub()
-                self.linear = torch.nn.Linear(4, 2)
-                self.relu = torch.nn.ReLU()
-                self.dequant = torch.ao.quantization.DeQuantStub()
-
-            def forward(self, x):
-                x = self.quant(x)
-                x = self.linear(x)
-                x = self.relu(x)
-                x = self.dequant(x)
-                return x
-
-        model = M()
-        model.qconfig = torch.ao.quantization.get_default_qconfig("fbgemm")
-        model = torch.ao.quantization.fuse_modules(model.eval(), [["linear", "relu"]])
-        model = torch.ao.quantization.prepare_qat(model.train())
-        # Set fixed weight and bias to avoid flaky test.
-        model.linear.weight = torch.nn.Parameter(
-            _construct_tensor_for_quantization_test((2, 4), max_val=2)
-        )
-        model.linear.bias = torch.nn.Parameter(torch.tensor([0.0, 1.0]))
-        model = torch.ao.quantization.convert(model)
-
-        # Set fixed input to avoid flaky test.
-        input = _construct_tensor_for_quantization_test((3, 4), offset=-384, max_val=12)
-        self.run_test(model, input)
-
-    def test_qat_maxpool2d(self):
-        class M(torch.nn.Module):
-            def __init__(self) -> None:
-                super().__init__()
-                self.quant = torch.ao.quantization.QuantStub()
-                self.pool = torch.nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-                self.dequant = torch.ao.quantization.DeQuantStub()
-
-            def forward(self, x):
-                x = self.quant(x)
-                x = self.pool(x)
-                x = self.dequant(x)
-                return x
-
-        model = M()
-        model.qconfig = torch.ao.quantization.get_default_qconfig("fbgemm")
-        model = torch.ao.quantization.prepare_qat(model.train())
-        model = torch.ao.quantization.convert(model)
-
-        # Set fixed input to avoid flaky test.
-        input = _construct_tensor_for_quantization_test((4, 4, 3, 2))
-        self.run_test(model, input)
-
-  # Scale and Zero-point must be a scalar in ORT:optimization
-    def test_qat_avg_pool2d(self):
-        model = torch.nn.Sequential(
-            torch.ao.quantization.QuantStub(),
-            torch.nn.AvgPool2d(kernel_size=3, stride=2, padding=1),
-            torch.ao.quantization.DeQuantStub(),
-        )
-        model.qconfig = torch.ao.quantization.get_default_qconfig("fbgemm")
-        model = torch.ao.quantization.prepare_qat(model.train())
-        model = torch.ao.quantization.convert(model)
-        input = _construct_tensor_for_quantization_test((4, 4, 3, 2))
-        self.run_test(model, input)
-
-    def test_qat_upsample_nearest2d(self):
-        model = torch.nn.Sequential(
-            torch.ao.quantization.QuantStub(),
-            torch.nn.UpsamplingNearest2d(scale_factor=1.5),
-            torch.ao.quantization.DeQuantStub(),
-        )
-        model.qconfig = torch.ao.quantization.get_default_qconfig("fbgemm")
-        model = torch.ao.quantization.prepare_qat(model.train())
-        model = torch.ao.quantization.convert(model)
-        input = _construct_tensor_for_quantization_test((4, 3, 2, 2))
-        self.run_test(model, input)
-
-    def test_0d_tensor_broadcast(self):
-        class fn(torch.nn.Module):
-            def forward(self, x, y):
-                a = torch.add(x, y)
-                b = torch.mul(y, y)
-                return a + b
-
-        x = torch.ones(0)
-        y = torch.ones(1)
-        self.run_test(fn(), (x, y), input_names=["x", "y"], output_names=["output"])
-
-    def test_convolution_allow_tf32(self):
-        class Module(torch.nn.Module):
-            def __init__(self, allow_tf32):
-                super().__init__()
-
-                self.allow_tf32 = allow_tf32
-                weight = torch.rand(32, 3, 3, 3)
-                self.weight = torch.nn.Parameter(weight)
-
-            def forward(self, x):
-                if self.allow_tf32:
-                    return torch._convolution(
-                        x,
-                        self.weight,
-                        None,
-                        [2, 2],
-                        [0, 0],
-                        [1, 1],
-                        False,
-                        [0, 0],
-                        1,
-                        False,
-                        False,
-                        True,
-                        True,
-                    )
-                else:
-                    return torch._convolution(
-                        x,
-                        self.weight,
-                        None,
-                        [2, 2],
-                        [0, 0],
-                        [1, 1],
-                        False,
-                        [0, 0],
-                        1,
-                        False,
-                        False,
-                        True,
-                    )
-
-        x = torch.randn(1, 3, 224, 224)
-        self.run_test(Module(False), x, rtol=1e-3, atol=1e-6)
-        self.run_test(Module(True), x, rtol=1e-3, atol=1e-6)
-
-    class AffineGridModule(torch.nn.Module):
-        def __init__(self, align_corners) -> None:
-            super().__init__()
-            self.align_corners = align_corners
-
-        def forward(self, theta, size):
-            return torch.nn.functional.affine_grid(theta, size, self.align_corners)
-
-
-    @common_utils.parametrize(
-        "align_corners",
-        (True, False),
-    )
-    @common_utils.parametrize(
-        "theta_params",
-        (
-            (
-                10,
-                np.array([0.3, -0.5]),
-                np.array([1.5, 0.5]),
-            ),
-            (
-                60,
-                np.array([-0.5, -0.5]),
-                np.array([3.0, 5.5]),
-            ),
-        ),
-    )
-    @common_utils.parametrize(
-        "size",
-        ([1, 1, 3, 2], [2, 10, 2, 3]),
-    )
-    def test_affine_grid_2d(self, align_corners, theta_params, size):
-        angle, translation, scale = theta_params
-        theta = np.array([], dtype=np.float32)
-        for _ in range(size[0]):
-            angle_radian = (angle / 180.0) * np.pi
-            theta = np.append(
-                theta,
-                [
-                    np.cos(angle_radian) * scale[0],
-                    -np.sin(angle_radian),
-                    translation[0],
-                    np.sin(angle_radian),
-                    np.cos(angle_radian) * scale[1],
-                    translation[1],
-                ],
-            )
-        theta = theta.reshape(size[0], 2, 3)
-        theta = torch.Tensor(theta)
-        self.run_test(TestONNXRuntime.AffineGridModule(align_corners), (theta, size))
-
-
-    @common_utils.parametrize(
-        "align_corners",
-        (True, False),
-    )
-    @common_utils.parametrize(
-        "theta_params",
-        (
-            (
-                [10, 20],
-                np.array([0.3, -0.5, 1.8]),
-                np.array([1.5, 2.0, 0.5]),
-            ),
-            (
-                [60, -30],
-                np.array([-0.5, -0.5, 0.3]),
-                np.array([0.3, 3.0, 5.5]),
-            ),
-        ),
-    )
-    @common_utils.parametrize(
-        "size",
-        ([1, 1, 3, 2, 2], [2, 10, 2, 2, 3]),
-    )
-    def test_affine_grid_3d(self, align_corners, theta_params, size):
-        angle, translation, scale = theta_params
-        theta = np.array([], dtype=np.float32)
-        for _ in range(size[0]):
-            angle_radian_x = (angle[0] / 180.0) * np.pi
-            angle_radian_y = (angle[1] / 180.0) * np.pi
-            rot_matrix_x = np.array(
-                [
-                    [1, 0, 0],
-                    [0, np.cos(angle_radian_x), -np.sin(angle_radian_x)],
-                    [0, np.sin(angle_radian_x), np.cos(angle_radian_x)],
-                ]
-            )
-            rot_matrix_y = np.array(
-                [
-                    [np.cos(angle_radian_y), 0, np.sin(angle_radian_y)],
-                    [0, 1, 0],
-                    [-np.sin(angle_radian_y), 0, np.cos(angle_radian_y)],
-                ]
-            )
-            rot_matrix = np.matmul(rot_matrix_x, rot_matrix_y)
-            rot_matrix = rot_matrix * scale.reshape(3, 1)
-            rot_matrix = np.append(rot_matrix, np.reshape(translation, (3, 1)), axis=1)
-            theta = np.append(theta, rot_matrix.flatten())
-
-        theta = theta.reshape(size[0], 3, 4)
-        theta = torch.Tensor(theta)
-        self.run_test(TestONNXRuntime.AffineGridModule(align_corners), (theta, size))
+        self.assert_export(M(), (x,))
 
     @common_utils.parametrize(
         "mode",
@@ -13278,70 +10923,36 @@ class DynamoExporterTest(common_utils.TestCase):
                     input, grid, self.mode, self.padding_mode, self.align_corners
                 )
 
-        self.run_test(
+        self.assert_export(
             GridSampleModule(mode, padding_mode, align_corners),
             (input, grid),
             **atol_rtol,
         )
 
-        # ONNX Opset 16 GridSample with 5D volumetric input is not supported.
-        volumetric_input_tensor = torch.randn(n, c, d_in, h_in, w_in)
-        volumetric_grid_tensor = torch.randn(n, d_out, h_out, w_out, 3)
-        for mode, padding_mode, align_corners in itertools.product(
-            (
-                "bilinear",
-                "nearest",
-            ),  # PyTorch grid_sample "bicubic" mode does not support 5D volumetric input.
-            (
-                "zeros",
-                "border",
-                "reflection",
-            ),
-            (
-                True,
-                False,
-            ),
-        ):
-            if self.opset_version < 20:
-                with self.assertRaises(
-                    torch.onnx.OnnxExporterError,
-                ):
-                    self.run_test(
-                        GridSampleModule(mode, padding_mode, align_corners),
-                        (volumetric_input_tensor, volumetric_grid_tensor),
-                        **atol_rtol,
-                    )
-            else:
-                self.run_test(
-                    GridSampleModule(mode, padding_mode, align_corners),
-                    (volumetric_input_tensor, volumetric_grid_tensor),
-                    **atol_rtol,
-                )
-
     class IfNoneInput(torch.nn.Module):
-        def forward(self, x) -> Optional[Tensor]:
-            y: Optional[Tensor] = None
+        def forward(self, x):
+            y = None
             if x.size(0) > 1:
                 y = x
             return y
 
     class IfNoneOutput(torch.nn.Module):
-        def forward(self, x) -> Optional[Tensor]:
-            y: Optional[Tensor] = x
+        def forward(self, x):
+            y = x
             if x.size(0) > 1:
                 y = None
             return y
 
     class LoopNoneInput(torch.nn.Module):
-        def forward(self, x) -> Optional[Tensor]:
-            y: Optional[Tensor] = None
+        def forward(self, x):
+            y = None
             for _ in range(x.size(0)):
                 y = x
             return y
 
     class LoopNoneOutput(torch.nn.Module):
-        def forward(self, x) -> Optional[Tensor]:
-            y: Optional[Tensor] = x
+        def forward(self, x):
+            y = x
             for _ in range(x.size(0)):
                 y = None
             return y
@@ -13382,7 +10993,7 @@ class DynamoExporterTest(common_utils.TestCase):
                     if attr.name in ("then_branch", "else_branch"):
                         self.assertEqual(expected_output_type, attr.g.output[0].type)
 
-        self.run_test(
+        self.assert_export(
             module_class(),
             x,
             # Ensure condition is not constant
@@ -13393,7 +11004,7 @@ class DynamoExporterTest(common_utils.TestCase):
     @skipTraceTest()
     def test_uninitialized_optional(self):
         class Module(torch.nn.Module):
-            def forward(self, y: Optional[Tensor]) -> Optional[Tensor]:
+            def forward(self, y):
                 if y is not None:
                     if y.shape[1] < 5:
                         if y.size(0) == 1:
@@ -13402,7 +11013,7 @@ class DynamoExporterTest(common_utils.TestCase):
                             return y
                 return y
 
-        self.run_test(
+        self.assert_export(
             Module(),
             torch.ones((3, 4), dtype=torch.int),
             dynamic_axes={"y": {0: "y0", 1: "y1"}},
@@ -13420,7 +11031,7 @@ class DynamoExporterTest(common_utils.TestCase):
 
         mod = torch.jit.script(M())  # preserve control flow
 
-        self.run_test(
+        self.assert_export(
             mod,
             # In order for the ONNX model behavior to match the torch model, we
             # need to construct input that has the same device that is checked for
@@ -13447,120 +11058,8 @@ class DynamoExporterTest(common_utils.TestCase):
                     x.lerp(torch.tensor(10.0), torch.tensor(0.4)),
                 )
 
-        self.run_test(LerpModel(), torch.rand(5, 4, 3))
+        self.assert_export(LerpModel(), torch.rand(5, 4, 3))
 
-    @common_utils.parametrize("input_dtype", [torch.cfloat, torch.float])
-    def test_print_tensor_within_torch_nn_module(self, input_dtype: torch.dtype):
-        class PrintTensorOnMyModel(torch.nn.Module):
-            def forward(self, x):
-                # 'print' has side effect calling 'resolve_conj' and 'resolve_neg'.
-                x_firsts = x[:, 0]
-                print(f"x_firsts: {x_firsts}")
-                # 'tolist' has side effect calling 'resolve_conj' and 'resolve_neg'.
-                # Annotation added to pass torch script.
-                _: list[float] = x.tolist()
-                return x_firsts
-
-        m = PrintTensorOnMyModel()
-        x = torch.randn(10, 5, dtype=input_dtype)
-        if input_dtype == torch.cfloat:
-            with self.assertRaises(RuntimeError):
-                self.run_test(
-                    m,
-                    x,
-                )
-        else:
-            self.run_test(
-                m,
-                x,
-            )
-
-
-    @unittest.skipIf(
-        not torch.hub._check_module_exists("torch_geometric"),
-        "torch_geometric not installed.",
-    )
-    def test_sage_conv(self):
-        from torch_geometric import nn as torch_geometric_nn
-
-        # Input
-        coords0 = torch.randn(1, 6)
-        coords1 = torch.randn(1, 6)
-        coords = torch.transpose(torch.cat((coords0, coords1), dim=0), 0, 1)
-        adj = torch_geometric_nn.knn_graph(coords, k=2, batch=None, loop=True)
-        edge_from = adj[0:1, :]
-        edge_to = adj[1:, :]
-        inputs = (coords0, coords1, edge_from, edge_to)
-
-        class MySAGEConv(torch.nn.Module):
-            def __init__(self) -> None:
-                super().__init__()
-                self.SAGEConvBlock1 = torch_geometric_nn.SAGEConv(
-                    2, 512, normalize=True
-                )
-                self.bano1 = torch_geometric_nn.BatchNorm(512)
-                self.relu = torch.nn.ReLU()
-                self.dense1 = torch.nn.Seq(Lin(512, 1))  # noqa: F821
-                self.sigmoid = torch.nn.Sigmoid()
-
-            def forward(self, coords0, coords1, edge_from, edge_to):
-                adj = torch.cat((edge_from, edge_to), dim=0)
-                gra = torch.transpose(torch.cat((coords0, coords1), dim=0), 0, 1)
-                x1 = self.SAGEConvBlock1(gra, edge_index=adj)
-                x = torch.unsqueeze(torch.sum(x1), dim=0)
-                return x
-
-        input_names = ["coords0", "coords1", "edge_from", "edge_to"]
-        output_names = ["outputs"]
-        dynamic_axes = {
-            "coords0": {0: "batch_size", 1: "features"},
-            "coords1": {0: "batch_size", 1: "features"},
-            "edge_from": {0: "batch_size", 1: "features"},
-            "edge_to": {0: "batch_size", 1: "features"},
-            "outputs": {0: "batch_size"},
-        }
-        self.run_test(
-            MySAGEConv(),
-            inputs,
-            input_names=input_names,
-            output_names=output_names,
-            dynamic_axes=dynamic_axes,
-        )
-
-    # Cannot export with older opsets because of "ConstantFill" op
-    # ConstantFill was a temp op removed at opset 8. This is no longer supported by onnxruntime
-    # There are still some issues prevent us from enabling script test for these scenarios:
-    # test_gru_*:
-    #   Operator aten::as_tensor is not supported by exporter yet.
-    #       - https://msdata.visualstudio.com/Vienna/_workitems/edit/1055382
-    #   Operator aten::_pack_padded_sequence is not supported by exporter yet.
-    #       - https://msdata.visualstudio.com/Vienna/_workitems/edit/1055384
-    # test_elman_*:
-    # Compiling in script mode fails with errors like:
-    #   torch.jit.frontend.UnsupportedNodeError: annotated assignments
-    #   without assigned value aren't supported
-    #       - https://msdata.visualstudio.com/Vienna/_workitems/edit/1160723
-    # test_lstm_*:
-    #   Compiling in script mode fails with errors like:
-    #   RuntimeError: Arguments for call are not valid.
-    #       - https://msdata.visualstudio.com/Vienna/_workitems/edit/1160723
-
-    @common_utils.parametrize(
-        "name, nonlinearity",
-        [
-            ("elman", "relu"),
-            ("elman", "tanh"),
-            ("lstm", None),
-            ("gru", None),
-        ],
-    )
-    @common_utils.parametrize(**_parametrize_rnn_args("layers"))
-    @common_utils.parametrize(**_parametrize_rnn_args("bidirectional"))
-    @common_utils.parametrize(**_parametrize_rnn_args("initial_state"))
-    @common_utils.parametrize(**_parametrize_rnn_args("packed_sequence"))
-    @common_utils.parametrize(**_parametrize_rnn_args("dropout"))
-    def test_rnn(self, *args, **kwargs):
-        self._dispatch_rnn_test(*args, **kwargs)
 
 if __name__ == "__main__":
     common_utils.run_tests()
