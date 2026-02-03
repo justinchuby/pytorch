@@ -30,7 +30,8 @@ def call_op(
     # onnxscript ops directly.
     from onnxscript.ir import convenience as ir_convenience
 
-    assert _core.current_tracer is not None
+    if _core.current_tracer is None:
+        raise AssertionError("current_tracer is None")
     tracer = _core.current_tracer
 
     inputs = list(args)
@@ -262,9 +263,10 @@ def higher_order_while_loop(
         num_outputs=len(cond_func.outputs),
     )
 
-    assert len(cond_func.outputs) == 1, (
-        "Condition function must return a single boolean value."
-    )
+    if len(cond_func.outputs) != 1:
+        raise AssertionError(
+            "Condition function must return a single boolean value."
+        )
 
     # ONNX Runtime complains about duplicate output names if we don't rename them
     for func_out, out in zip(body_func.outputs, body_node.outputs):
@@ -313,9 +315,10 @@ def higher_order_while_loop(
         _domain=cond_func.domain,
     )
 
-    assert len(initial_outputs) == 1, (
-        "Condition function must return a single boolean value."
-    )
+    if len(initial_outputs) != 1:
+        raise AssertionError(
+            "Condition function must return a single boolean value."
+        )
 
     # Create the Loop operator call
     # Loop(M, cond, v_initial) where M is empty (no trip count limit)
