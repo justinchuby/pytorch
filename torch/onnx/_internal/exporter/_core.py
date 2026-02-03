@@ -755,9 +755,7 @@ def _handle_output_node(
             continue
         output_value_name = output.name  # type: ignore[union-attr]
         if not isinstance(output_value_name, str):
-            raise AssertionError(
-                f"Bug: Expected {output_value_name!r} to be a string"
-            )
+            raise AssertionError(f"Bug: Expected {output_value_name!r} to be a string")
         values = node_name_to_values[output_value_name]
         if isinstance(values, Sequence):
             graph_like.outputs.extend(values)
