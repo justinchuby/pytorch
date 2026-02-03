@@ -27,7 +27,8 @@ class _WithExport:
             verbose=False,
             **options,
         )
-        assert onnx_program is not None
+        if onnx_program is None:
+            raise AssertionError("Exported ONNX program is None")
         return onnx_program
 
 
